@@ -1,0 +1,43 @@
+# Go
+/juli
+*.exe
+*.test
+*.out
+vendor/
+
+# Node / Nuxt
+web/node_modules/
+web/.output/
+web/.nuxt/
+web/.data/
+web/dist/
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Build
+/bin/
+/release/
+cmd/juli/web/
+!cmd/juli/web/index.html
+
+# Env
+.env
+.env.local
+
+.playwright-mcp/
+.worktrees/
+docs/plans/*
+
+node_modules/
+
+# Local dev config
+solo.yml

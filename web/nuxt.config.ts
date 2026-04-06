@@ -1,0 +1,27 @@
+export default defineNuxtConfig({
+  compatibilityDate: '2025-07-15',
+  ssr: false, // SPA mode — no SSR
+  devtools: { enabled: false },
+  devServer: {
+    port: 3000,
+  },
+  vite: {
+    server: {
+      proxy: {
+        '/api': 'http://localhost:8080',
+        '/ws': {
+          target: 'http://localhost:8080',
+          ws: true,
+        },
+      },
+    },
+  },
+  app: {
+    head: {
+      title: 'Juli — Tmux Web Console',
+      meta: [
+        { name: 'viewport', content: 'width=device-width, initial-scale=1' },
+      ],
+    },
+  },
+})
