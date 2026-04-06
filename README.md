@@ -225,18 +225,6 @@ Built-in presets always appear first. The **Custom...** option always appears la
 
 ## Development
 
-Run the Go server and Nuxt dev server in separate terminals:
-
-```bash
-# Terminal 1 — backend
-go run ./cmd/juli --token SECRET --port 8080
-
-# Terminal 2 — frontend (with hot reload)
-cd web && npm install && npm run dev
-```
-
-The Nuxt dev server proxies API requests to the Go backend.
-
 ### Running tests
 
 ```bash
