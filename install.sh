@@ -1,45 +1,55 @@
 #!/bin/sh
-set -e
+set -eu
 
 REPO="cihann/juliterm"
-INSTALL_DIR="/usr/local/bin"
+BINARY="juli"
+INSTALL_DIR="${JULI_INSTALL_DIR:-/usr/local/bin}"
 
-# Detect OS
-OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-case "$OS" in
-  linux)  OS="linux" ;;
-  darwin) OS="darwin" ;;
-  *)      echo "Unsupported OS: $OS" >&2; exit 1 ;;
-esac
+main() {
+    need_cmd curl
+    need_cmd tar
 
-# Detect architecture
-ARCH=$(uname -m)
-case "$ARCH" in
-  x86_64|amd64)  ARCH="amd64" ;;
-  aarch64|arm64)  ARCH="arm64" ;;
-  *)              echo "Unsupported architecture: $ARCH" >&2; exit 1 ;;
-esac
+    case "$(uname -s)" in
+        Linux)  os="linux" ;;
+        Darwin) os="darwin" ;;
+        *)      err "unsupported OS: $(uname -s)" ;;
+    esac
 
-# Get latest version
-LATEST=$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
-if [ -z "$LATEST" ]; then
-  echo "Failed to fetch latest release." >&2
-  exit 1
-fi
+    case "$(uname -m)" in
+        x86_64|amd64)   arch="amd64" ;;
+        aarch64|arm64)  arch="arm64" ;;
+        *)              err "unsupported architecture: $(uname -m)" ;;
+    esac
 
-BINARY="juli-${OS}-${ARCH}"
-URL="https://github.com/${REPO}/releases/download/${LATEST}/${BINARY}"
+    tag="${1:-$(curl -fsSL "https://api.github.com/repos/${REPO}/releases/latest" \
+        | grep '"tag_name"' | cut -d'"' -f4)}"
+    [ -n "${tag}" ] || err "failed to determine latest release tag"
 
-echo "Downloading juli ${LATEST} for ${OS}/${ARCH}..."
-TMP=$(mktemp)
-curl -fsSL "$URL" -o "$TMP"
-chmod +x "$TMP"
+    url="https://github.com/${REPO}/releases/download/${tag}/${BINARY}-${tag}-${os}-${arch}.tar.gz"
+    tmp="$(mktemp -d)"
+    trap 'rm -rf "${tmp}"' EXIT
 
-if [ -w "$INSTALL_DIR" ]; then
-  mv "$TMP" "${INSTALL_DIR}/juli"
-else
-  echo "Installing to ${INSTALL_DIR} (requires sudo)..."
-  sudo mv "$TMP" "${INSTALL_DIR}/juli"
-fi
+    echo "downloading ${BINARY} ${tag} for ${os}/${arch}..."
+    curl -fsSL "${url}" | tar xz -C "${tmp}"
 
-echo "juli ${LATEST} installed to ${INSTALL_DIR}/juli"
+    if [ -w "${INSTALL_DIR}" ]; then
+        mv "${tmp}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+    else
+        echo "installing to ${INSTALL_DIR} (requires sudo)..."
+        sudo mv "${tmp}/${BINARY}" "${INSTALL_DIR}/${BINARY}"
+    fi
+
+    chmod +x "${INSTALL_DIR}/${BINARY}"
+    echo "${BINARY} ${tag} installed to ${INSTALL_DIR}/${BINARY}"
+}
+
+need_cmd() {
+    command -v "$1" > /dev/null 2>&1 || err "need '$1' (not found)"
+}
+
+err() {
+    echo "error: $1" >&2
+    exit 1
+}
+
+main "$@"
