@@ -9,8 +9,20 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    name: Build and Release
+  create-draft:
+    name: Create Draft Release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Create draft release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${{ github.ref_name }}" --draft --generate-notes --verify-tag --title "${{ github.ref_name }}"
+
+  build-and-upload:
+    name: Build and Upload
+    needs: create-draft
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -33,17 +45,44 @@ jobs:
           rm -rf cmd/juli/web
           cp -r web/.output/public cmd/juli/web
 
-      - name: Cross-compile binaries
+      - name: Cross-compile and package
         run: |
-          mkdir -p release
+          VERSION="${{ github.ref_name }}"
+          mkdir -p release staging
           for pair in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
             os="${pair%/*}"
             arch="${pair#*/}"
-            GOOS=$os GOARCH=$arch go build -ldflags="-s -w" -o "release/juli-${os}-${arch}" ./cmd/juli
+            GOOS=$os GOARCH=$arch go build -ldflags="-s -w" -o staging/juli ./cmd/juli
+            tar -czf "release/juli-${VERSION}-${os}-${arch}.tar.gz" -C staging juli
           done
 
-      - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
-        with:
-          generate_release_notes: true
-          files: release/*
+      - name: Upload archives
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.ref_name }}" release/*.tar.gz
+
+  checksums-and-publish:
+    name: Checksums and Publish
+    needs: build-and-upload
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download release artifacts
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p release
+          gh release download "${{ github.ref_name }}" --repo "${{ github.repository }}" --dir release --pattern '*.tar.gz'
+
+      - name: Generate and upload checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          cd release
+          sha256sum *.tar.gz > sha256sums.txt
+          cat sha256sums.txt
+          gh release upload "${{ github.ref_name }}" sha256sums.txt --repo "${{ github.repository }}"
+
+      - name: Publish release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release edit "${{ github.ref_name }}" --repo "${{ github.repository }}" --draft=false
