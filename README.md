@@ -8,6 +8,10 @@ Juli is a web-based tmux client. It runs a small Go server on your machine and l
 
 One binary. No dependencies besides tmux.
 
+![Juli terminal session view](img/juliterm1.png)
+
+![Juli session tree and split panes](img/juliterm2.png)
+
 ## Install
 
 ```bash
