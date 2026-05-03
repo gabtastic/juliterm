@@ -10,7 +10,10 @@ const sessionTree = useSessionTree()
 const socket = useTerminalSocket()
 const notifications = useNotifications()
 const { isMobile } = useViewportMode()
+const route = useRoute()
+const router = useRouter()
 const errorMessage = ref<string | null>(null)
+const urlRestored = ref(false)
 
 function showError(msg: string) {
   errorMessage.value = msg
@@ -22,6 +25,16 @@ function showError(msg: string) {
 // so ordering relative to WebSocket connect is irrelevant.
 const unsubSessionTree = socket.onSessionTree((data: unknown[]) => {
   sessionTree.updateFromMessage(data)
+
+  // Restore selected session from URL on page load/refresh.
+  if (!urlRestored.value && !sessionTree.selectedSessionName.value) {
+    const sessionFromUrl = route.query.session as string | undefined
+    if (sessionFromUrl && sessionTree.sessions.value.some(s => s.name === sessionFromUrl)) {
+      urlRestored.value = true
+      handleSelectSession(sessionFromUrl)
+    }
+  }
+
   notifications.processSessionUpdate(data, sessionTree.selectedSessionName.value, handleSelectSession)
 })
 
@@ -29,6 +42,7 @@ const unsubError = socket.onError((err) => {
   console.error('[juli] server error:', err.code, err.message)
   if (err.code === 'session_ended') {
     sessionTree.clearSelection()
+    router.replace({ query: {} })
     showError('Session terminated')
   }
 })
@@ -61,18 +75,20 @@ onBeforeUnmount(() => {
 
 function handleSelectSession(sessionName: string) {
   sessionTree.selectSession(sessionName)
+  router.replace({ query: { session: sessionName } })
 }
 
 function handleSelectWindow(sessionName: string, windowIndex: number) {
   // If not attached to this session yet, attach first.
   if (sessionTree.selectedSessionName.value !== sessionName) {
-    sessionTree.selectSession(sessionName)
+    handleSelectSession(sessionName)
   }
   socket.selectWindow(sessionName, windowIndex)
 }
 
 function handleReturnToGrid() {
   sessionTree.clearSelection()
+  router.replace({ query: {} })
 }
 
 const isConnected = computed(() => {
