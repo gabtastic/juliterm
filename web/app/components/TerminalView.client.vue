@@ -22,7 +22,7 @@ const terminalRef = ref<HTMLDivElement | null>(null)
 const socket = useTerminalSocket()
 const sessionTree = useSessionTree()
 const api = useSessionApi()
-const { isMobile } = useViewportMode()
+const { isMobile } = useViewportMode(1024)
 
 // Context menu state
 const ctxVisible = ref(false)
