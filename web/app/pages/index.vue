@@ -23,18 +23,18 @@ function showError(msg: string) {
 // Register session tree callback immediately — no timer hack needed.
 // The singleton buffers the last session tree and replays on subscribe,
 // so ordering relative to WebSocket connect is irrelevant.
+function tryRestoreFromUrl() {
+  if (urlRestored.value || sessionTree.selectedSessionName.value) return
+  const sessionFromUrl = route.query.session as string | undefined
+  if (sessionFromUrl && sessionTree.sessions.value.some(s => s.name === sessionFromUrl)) {
+    urlRestored.value = true
+    handleSelectSession(sessionFromUrl)
+  }
+}
+
 const unsubSessionTree = socket.onSessionTree((data: unknown[]) => {
   sessionTree.updateFromMessage(data)
-
-  // Restore selected session from URL on page load/refresh.
-  if (!urlRestored.value && !sessionTree.selectedSessionName.value) {
-    const sessionFromUrl = route.query.session as string | undefined
-    if (sessionFromUrl && sessionTree.sessions.value.some(s => s.name === sessionFromUrl)) {
-      urlRestored.value = true
-      handleSelectSession(sessionFromUrl)
-    }
-  }
-
+  tryRestoreFromUrl()
   notifications.processSessionUpdate(data, sessionTree.selectedSessionName.value, handleSelectSession)
 })
 
@@ -55,6 +55,7 @@ async function fetchSessions() {
     if (res.ok) {
       const data = await res.json()
       sessionTree.updateFromMessage(data)
+      tryRestoreFromUrl()
     }
   } catch {
     // Will retry via WebSocket once connected
