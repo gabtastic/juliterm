@@ -45,6 +45,11 @@ type Manager struct {
 	clients map[string]*ControlClient // sessionID -> client
 	watcher *ControlClient            // dedicated watcher for %sessions-changed
 
+	// rediscover tracks per-session rediscovery goroutines (see
+	// scheduleRediscover): present = one is running, true = run once more
+	// when it finishes. Guarded by mu.
+	rediscover map[string]bool
+
 	// syncMu serializes syncSessions, which runs from the watcher, the CRUD
 	// handlers and the watcher-liveness goroutine. Concurrent runs could both
 	// add the same session and leak a control client.
@@ -72,6 +77,7 @@ func NewManager(tmuxPath string) *Manager {
 		tmuxPath:           tmuxPath,
 		tree:               NewSessionTree(),
 		clients:            make(map[string]*ControlClient),
+		rediscover:         make(map[string]bool),
 		prevExcerpts:       make(map[string]string),
 		excerptStableCount: make(map[string]int),
 	}
@@ -845,18 +851,18 @@ func (m *Manager) wireClientCallbacks(client *ControlClient, sessionID string) {
 		case EventWindowAdd:
 			// Re-discover the full session to pick up the new window and
 			// its panes, since %window-add only gives us the window ID.
-			s, err := m.discoverSessionDetails(sessionID)
-			if err != nil {
-				log.Printf("tmux manager: rediscover session %s after window-add: %v", sessionID, err)
-				return
-			}
-			m.tree.UpdateSession(s)
+			// It runs several tmux commands, so keep it off this read loop.
+			m.scheduleRediscover(sessionID, true)
 
 		case EventWindowClose:
 			m.tree.RemoveWindow(sessionID, event.WindowID)
+			// A rediscovery already in flight may have read tmux before this
+			// change; have it run again so it can't restore stale state.
+			m.scheduleRediscover(sessionID, false)
 
 		case EventWindowRenamed:
 			m.tree.RenameWindow(sessionID, event.WindowID, event.Name)
+			m.scheduleRediscover(sessionID, false)
 		}
 	})
 }
@@ -1064,4 +1070,56 @@ func (m *Manager) trackExcerpt(sessionID, excerpt string) bool {
 	}
 	m.prevExcerpts[sessionID] = excerpt
 	return stable
+}
+
+// scheduleRediscover re-reads a session's windows and panes from tmux in a
+// background goroutine and replaces it in the tree. At most one runs per
+// session: a request while one is running makes it run once more afterwards.
+// With start false, it only requests that rerun and never starts a new one.
+func (m *Manager) scheduleRediscover(sessionID string, start bool) {
+	m.mu.Lock()
+	if _, running := m.rediscover[sessionID]; running {
+		m.rediscover[sessionID] = true
+		m.mu.Unlock()
+		return
+	}
+	if !start {
+		m.mu.Unlock()
+		return
+	}
+	m.rediscover[sessionID] = false
+	m.mu.Unlock()
+
+	go func() {
+		for {
+			if m.ctx.Err() != nil {
+				m.mu.Lock()
+				delete(m.rediscover, sessionID)
+				m.mu.Unlock()
+				return
+			}
+			s, err := m.discoverSessionDetails(sessionID)
+
+			m.mu.Lock()
+			_, tracked := m.clients[sessionID]
+			again := m.rediscover[sessionID]
+			if again {
+				m.rediscover[sessionID] = false
+			} else {
+				delete(m.rediscover, sessionID)
+			}
+			m.mu.Unlock()
+
+			switch {
+			case err != nil:
+				log.Printf("tmux manager: rediscover session %s: %v", sessionID, err)
+			case tracked:
+				// Skip sessions removed meanwhile, so they don't reappear.
+				m.tree.UpdateSession(s)
+			}
+			if !again {
+				return
+			}
+		}
+	}()
 }
