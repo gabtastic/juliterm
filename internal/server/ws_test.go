@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/cihann/juliterm/internal/protocol"
+	"github.com/cihann/juliterm/internal/tmux"
 	"github.com/coder/websocket"
 )
 
@@ -263,5 +264,34 @@ func TestWebSocket_InputWithoutSessionReportsNotAttached(t *testing.T) {
 	}
 	if errors != 1 {
 		t.Fatalf("not_attached errors = %d, want 1", errors)
+	}
+}
+
+func TestWebSocket_ReceivesBroadcastTree(t *testing.T) {
+	s, conn, cleanup := openTestWS(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// The initial tree arrives synchronously on connect.
+	if _, data, err := conn.Read(ctx); err != nil {
+		t.Fatalf("read initial tree: %v", err)
+	} else if msgType, _, _ := protocol.ParseMessage(data); msgType != protocol.MsgSessionTree {
+		t.Fatalf("first frame type = 0x%02x, want session tree", msgType)
+	}
+
+	s.tmuxMgr.Tree().UpdateSession(&tmux.Session{ID: "$9", Name: "later"})
+	s.fanout.BroadcastSessionTree()
+
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("no broadcast tree: %v", err)
+		}
+		msgType, payload, _ := protocol.ParseMessage(data)
+		if msgType == protocol.MsgSessionTree && strings.Contains(string(payload), `"later"`) {
+			return
+		}
 	}
 }

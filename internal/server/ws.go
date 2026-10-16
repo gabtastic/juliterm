@@ -42,7 +42,52 @@ type wsConn struct {
 	ptyDone       chan struct{}      // closed when forwardPTYOutput has exited
 	cols, rows    uint16             // last size the client reported, 0 if none yet
 	notAttachedAt time.Time          // last not_attached error sent (rate limit)
+	treeCh        chan []byte        // latest pending session tree frame (size 1)
 	writeMu       sync.Mutex
+}
+
+// newWSConn creates a wsConn for an accepted connection.
+func newWSConn(id string, conn *websocket.Conn, authSessionID string) *wsConn {
+	return &wsConn{
+		id:            id,
+		conn:          conn,
+		authSessionID: authSessionID,
+		treeCh:        make(chan []byte, 1),
+	}
+}
+
+// offerTree queues a session tree frame for this connection without ever
+// blocking: a pending frame that hasn't been written yet is replaced, since
+// only the latest tree matters.
+func (wc *wsConn) offerTree(msg []byte) {
+	for {
+		select {
+		case wc.treeCh <- msg:
+			return
+		default:
+		}
+		// Full: drop the stale pending frame and try again.
+		select {
+		case <-wc.treeCh:
+		default:
+		}
+	}
+}
+
+// treeWriter writes queued session tree frames until ctx ends or a write
+// fails. It runs in its own goroutine so a slow client only delays its own
+// updates, never the broadcaster.
+func (wc *wsConn) treeWriter(ctx context.Context) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case msg := <-wc.treeCh:
+			if err := wc.writeMessage(msg); err != nil {
+				return
+			}
+		}
+	}
 }
 
 // writeMessage sends a binary message over the WebSocket.
@@ -97,11 +142,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	wc := &wsConn{
-		id:            hex.EncodeToString(idBytes),
-		conn:          conn,
-		authSessionID: authID,
-	}
+	wc := newWSConn(hex.EncodeToString(idBytes), conn, authID)
 
 	s.fanout.RegisterConn(wc)
 	log.Printf("ws[%s]: connected", wc.id)
@@ -121,6 +162,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go wc.keepAlive(ctx)
+	go wc.treeWriter(ctx)
 
 	// Read loop — handle messages from the browser.
 	s.readLoop(ctx, wc)
