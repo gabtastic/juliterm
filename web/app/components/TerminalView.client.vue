@@ -3,6 +3,7 @@ import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 
 import { useTerminalSocket, type TerminalSize } from '~/composables/useTerminalSocket'
@@ -70,6 +71,7 @@ async function onCtxAction(action: string) {
 
 let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
+let webglAddon: WebglAddon | null = null
 let resizeObserver: ResizeObserver | null = null
 let unsubOutput: (() => void) | null = null
 let unsubReconnect: (() => void) | null = null
@@ -108,6 +110,24 @@ function scheduleSyncSize() {
     resizeTimer = null
     syncSize()
   }, RESIZE_DEBOUNCE_MS)
+}
+
+// Draw with WebGL: the default DOM renderer struggles with heavy output and
+// full-screen repaints. Browsers without WebGL2 (some mobile or remote
+// browsers) keep the DOM renderer, and so does a lost GPU context.
+function loadWebglRenderer() {
+  if (!terminal) return
+  try {
+    const addon = new WebglAddon()
+    addon.onContextLoss(() => {
+      addon.dispose()
+      if (webglAddon === addon) webglAddon = null
+    })
+    terminal.loadAddon(addon)
+    webglAddon = addon
+  } catch {
+    webglAddon = null
+  }
 }
 
 function stopRightClickPropagation(e: MouseEvent) {
@@ -150,6 +170,7 @@ onMounted(() => {
 
   if (terminalRef.value) {
     terminal.open(terminalRef.value)
+    loadWebglRenderer()
     requestAnimationFrame(() => {
       fitTerminal()
     })
@@ -252,6 +273,8 @@ onBeforeUnmount(() => {
     clearTimeout(resizeTimer)
     resizeTimer = null
   }
+  webglAddon?.dispose()
+  webglAddon = null
   if (terminal) {
     terminal.dispose()
     terminal = null
