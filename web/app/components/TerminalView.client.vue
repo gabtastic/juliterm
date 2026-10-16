@@ -74,6 +74,13 @@ let resizeObserver: ResizeObserver | null = null
 let unsubOutput: (() => void) | null = null
 let unsubReconnect: (() => void) | null = null
 
+// Container resizes (window, sidebar drag, mobile keyboard) fire many times a
+// second; wait for them to settle, and only tell the server when the cell
+// size actually changed. Every resize reflows the shared tmux window.
+const RESIZE_DEBOUNCE_MS = 75
+let resizeTimer: ReturnType<typeof setTimeout> | null = null
+let lastSentSize: TerminalSize | null = null
+
 // Fit the terminal to its container and return the resulting size, or null
 // when the container is collapsed (hidden, mid-transition): fitting then
 // would squash the terminal, and sending that size would shrink the shared
@@ -85,6 +92,22 @@ function fitTerminal(): TerminalSize | null {
   if (!dims || dims.cols < 10) return null
   fitAddon.fit()
   return { cols: terminal.cols, rows: terminal.rows }
+}
+
+function syncSize() {
+  const size = fitTerminal()
+  if (!size) return
+  if (lastSentSize && lastSentSize.cols === size.cols && lastSentSize.rows === size.rows) return
+  lastSentSize = size
+  socket.sendResize(size.cols, size.rows)
+}
+
+function scheduleSyncSize() {
+  if (resizeTimer) clearTimeout(resizeTimer)
+  resizeTimer = setTimeout(() => {
+    resizeTimer = null
+    syncSize()
+  }, RESIZE_DEBOUNCE_MS)
 }
 
 function stopRightClickPropagation(e: MouseEvent) {
@@ -128,8 +151,10 @@ onMounted(() => {
   if (terminalRef.value) {
     terminal.open(terminalRef.value)
     requestAnimationFrame(() => {
-      fitAddon?.fit()
+      fitTerminal()
     })
+    // Cell metrics depend on the font; measure again once fonts are loaded.
+    document.fonts?.ready.then(() => scheduleSyncSize())
 
     // Intercept right-click before xterm.js can forward it to tmux as mouse button-3.
     // Without this, tmux's native menu appears underneath our HTML context menu.
@@ -180,12 +205,7 @@ onMounted(() => {
 
   // Resize observer — fit terminal to container, then tell server
   resizeObserver = new ResizeObserver(() => {
-    requestAnimationFrame(() => {
-      if (fitAddon && terminal) {
-        fitAddon.fit()
-        socket.sendResize(terminal.cols, terminal.rows)
-      }
-    })
+    scheduleSyncSize()
   })
   if (terminalRef.value) {
     resizeObserver.observe(terminalRef.value)
@@ -208,7 +228,9 @@ watch(
             terminal.clear()
             terminal.reset()
           }
-          socket.selectSession(newSession, fitTerminal() ?? undefined)
+          const size = fitTerminal()
+          if (size) lastSentSize = size
+          socket.selectSession(newSession, size ?? undefined)
         })
       })
     }
@@ -226,6 +248,10 @@ onBeforeUnmount(() => {
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
+  }
+  if (resizeTimer) {
+    clearTimeout(resizeTimer)
+    resizeTimer = null
   }
   if (terminal) {
     terminal.dispose()
