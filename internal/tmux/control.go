@@ -120,7 +120,11 @@ func (c *ControlClient) Start() error {
 	// -u keeps tmux from replacing non-ASCII characters (including the
 	// separators in our format strings) with "_" when there is no UTF-8
 	// locale, as under launchd.
-	c.cmd = exec.CommandContext(c.ctx, c.tmuxPath, "-u", "-C", "attach-session", "-t", c.sessionID)
+	// -f no-output: juli only uses control mode for structure events
+	// (windows, sessions); terminal output reaches the browser through its
+	// own PTY. Without it tmux streams every pane's output here as %output,
+	// which nothing consumes.
+	c.cmd = exec.CommandContext(c.ctx, c.tmuxPath, "-u", "-C", "attach-session", "-f", "no-output", "-t", c.sessionID)
 	c.cmd.Env = withoutTmuxEnv(os.Environ())
 
 	stdinPipe, err := c.cmd.StdinPipe()
