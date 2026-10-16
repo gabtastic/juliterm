@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { ref, onBeforeUnmount } from 'vue'
 import { useViewportMode } from '~/composables/useViewportMode'
+import { useSidebarLayout } from '~/composables/useSidebarLayout'
 
 definePageMeta({
   middleware: 'auth',
@@ -12,6 +13,9 @@ const notifications = useNotifications()
 const { isMobile } = useViewportMode()
 const route = useRoute()
 const router = useRouter()
+const sidebar = useSidebarLayout()
+const mainAreaRef = ref<HTMLElement | null>(null)
+const resizingSidebar = ref(false)
 const errorMessage = ref<string | null>(null)
 const urlRestored = ref(false)
 
@@ -92,6 +96,25 @@ function handleReturnToGrid() {
   router.replace({ query: {} })
 }
 
+// Drag the handle between sidebar and terminal to resize the sidebar; drag
+// it most of the way left to hide it. Double-click restores the default width.
+function startSidebarResize(e: PointerEvent) {
+  const handle = e.currentTarget as HTMLElement
+  handle.setPointerCapture(e.pointerId)
+  resizingSidebar.value = true
+}
+
+function moveSidebarResize(e: PointerEvent) {
+  if (!resizingSidebar.value || !mainAreaRef.value) return
+  sidebar.dragTo(e.clientX - mainAreaRef.value.getBoundingClientRect().left)
+}
+
+function endSidebarResize(e: PointerEvent) {
+  if (!resizingSidebar.value) return
+  ;(e.currentTarget as HTMLElement).releasePointerCapture(e.pointerId)
+  resizingSidebar.value = false
+}
+
 const isConnected = computed(() => {
   return socket.connected.value
 })
@@ -110,22 +133,44 @@ const isConnected = computed(() => {
     />
 
     <!-- Terminal mode: session attached -->
-    <div v-else class="main-area" :class="{ 'main-area--mobile': isMobile }">
-      <SessionTree
-        v-if="!isMobile"
-        :sessions="sessionTree.sessions.value"
-        :selected-session-name="sessionTree.selectedSessionName.value"
-        @select="handleSelectSession"
-        @select-window="handleSelectWindow"
-        @error="showError"
-      />
+    <div
+      v-else
+      ref="mainAreaRef"
+      class="main-area"
+      :class="{ 'main-area--mobile': isMobile, 'main-area--resizing': resizingSidebar }"
+    >
+      <template v-if="!isMobile">
+        <SessionTree
+          v-if="!sidebar.collapsed.value"
+          :style="{ width: `${sidebar.width.value}px` }"
+          :sessions="sessionTree.sessions.value"
+          :selected-session-name="sessionTree.selectedSessionName.value"
+          @select="handleSelectSession"
+          @select-window="handleSelectWindow"
+          @error="showError"
+        />
+        <div
+          class="sidebar-handle"
+          role="separator"
+          aria-orientation="vertical"
+          :aria-valuenow="sidebar.collapsed.value ? 0 : sidebar.width.value"
+          title="Drag to resize the sidebar, double-click to reset"
+          @pointerdown.prevent="startSidebarResize"
+          @pointermove="moveSidebarResize"
+          @pointerup="endSidebarResize"
+          @pointercancel="endSidebarResize"
+          @dblclick="sidebar.resetWidth"
+        />
+      </template>
       <div class="content-area">
         <ViewerBar
           :session-name="sessionTree.selectedSessionName.value"
           :connected="isConnected"
           :compact="isMobile"
           :sessions="sessionTree.sessions.value"
+          :sidebar-collapsed="sidebar.collapsed.value"
           @back="handleReturnToGrid"
+          @toggle-sidebar="sidebar.toggle"
           @error="showError"
         />
         <TerminalView
@@ -151,6 +196,32 @@ const isConnected = computed(() => {
   flex: 1;
   display: flex;
   overflow: hidden;
+}
+
+.main-area--resizing {
+  cursor: col-resize;
+  user-select: none;
+}
+
+/* Keep xterm from swallowing pointer events mid-drag. */
+.main-area--resizing .content-area {
+  pointer-events: none;
+}
+
+.sidebar-handle {
+  position: relative;
+  width: 4px;
+  margin-left: -2px;
+  margin-right: -2px;
+  flex-shrink: 0;
+  cursor: col-resize;
+  z-index: 1;
+  transition: background 0.1s;
+}
+
+.sidebar-handle:hover,
+.main-area--resizing .sidebar-handle {
+  background: #58a6ff66;
 }
 
 .content-area {
