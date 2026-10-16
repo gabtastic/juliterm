@@ -346,7 +346,7 @@ function handleCancel() {
 <style scoped>
 .session-tree {
   width: 240px;
-  min-width: 240px;
+  flex-shrink: 0;
   background: #161b22;
   border-right: 1px solid #21262d;
   overflow-y: auto;
