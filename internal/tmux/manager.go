@@ -717,7 +717,7 @@ func (m *Manager) discoverSessionDetails(sessionID string) (*Session, error) {
 
 	// Query windows.
 	winOut, err := exec.CommandContext(m.ctx, m.tmuxPath,
-		"list-windows", "-t", sessionID,
+		"-u", "list-windows", "-t", sessionID,
 		"-F", "#{window_id}\t#{window_name}\t#{window_index}\t#{window_active}\t#{window_zoomed_flag}",
 	).Output()
 	if err != nil {
@@ -731,7 +731,7 @@ func (m *Manager) discoverSessionDetails(sessionID string) (*Session, error) {
 	// Query panes for each window.
 	for _, w := range windows {
 		paneOut, err := exec.CommandContext(m.ctx, m.tmuxPath,
-			"list-panes", "-t", w.ID,
+			"-u", "list-panes", "-t", w.ID,
 			"-F", "#{pane_id}\t#{pane_width}\t#{pane_height}\t#{pane_active}\t#{pane_current_command}\t#{pane_current_path}\t#{pane_pid}",
 		).Output()
 		if err != nil {
@@ -886,7 +886,7 @@ func (m *Manager) startMetadataPoller(interval time.Duration) {
 func (m *Manager) enrichMetadata() {
 	// Get all pane info in one tmux call.
 	out, err := exec.CommandContext(m.ctx, m.tmuxPath,
-		"list-panes", "-a",
+		"-u", "list-panes", "-a",
 		"-F", "#{session_id}\t#{pane_id}\t#{window_active}\t#{pane_active}\t#{pane_pid}\t#{pane_current_path}\t#{pane_current_command}\t#{pane_dead}",
 	).Output()
 	if err != nil {
@@ -1001,9 +1001,12 @@ func (m *Manager) enrichMetadata() {
 // It returns an error for unexpected failures. An exit code 1 with "no server
 // running" or "no sessions" output is treated as an empty list (not an error),
 // because tmux uses exit 1 for both "no sessions" and real failures.
+//
+// Every tmux query whose output we parse passes -u: without a UTF-8 locale
+// (as under launchd) tmux prints the tab separators as "_" and parsing fails.
 func (m *Manager) listSessions() ([]*Session, error) {
 	out, err := exec.CommandContext(m.ctx, m.tmuxPath,
-		"list-sessions", "-F", "#{session_id}\t#{session_name}\t#{session_activity}\t#{session_attached}",
+		"-u", "list-sessions", "-F", "#{session_id}\t#{session_name}\t#{session_activity}\t#{session_attached}",
 	).Output()
 	if err != nil {
 		// tmux returns exit 1 when there are no sessions — that's fine.

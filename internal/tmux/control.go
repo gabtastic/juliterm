@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"os"
 	"os/exec"
 	"strconv"
 	"strings"
@@ -116,7 +117,11 @@ func (c *ControlClient) Start() error {
 		return fmt.Errorf("tmux: control client already started")
 	}
 
-	c.cmd = exec.CommandContext(c.ctx, c.tmuxPath, "-C", "attach-session", "-t", c.sessionID)
+	// -u keeps tmux from replacing non-ASCII characters (including the
+	// separators in our format strings) with "_" when there is no UTF-8
+	// locale, as under launchd.
+	c.cmd = exec.CommandContext(c.ctx, c.tmuxPath, "-u", "-C", "attach-session", "-t", c.sessionID)
+	c.cmd.Env = withoutTmuxEnv(os.Environ())
 
 	stdinPipe, err := c.cmd.StdinPipe()
 	if err != nil {
@@ -395,4 +400,17 @@ func splitFirst(s string) (string, string) {
 		return s, ""
 	}
 	return s[:i], s[i+1:]
+}
+
+// withoutTmuxEnv returns env minus TMUX and TMUX_PANE. When juli itself runs
+// inside tmux, an inherited TMUX makes tmux refuse to nest the attach.
+func withoutTmuxEnv(env []string) []string {
+	out := make([]string, 0, len(env))
+	for _, kv := range env {
+		if strings.HasPrefix(kv, "TMUX=") || strings.HasPrefix(kv, "TMUX_PANE=") {
+			continue
+		}
+		out = append(out, kv)
+	}
+	return out
 }
