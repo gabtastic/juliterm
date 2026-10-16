@@ -8,7 +8,7 @@ import '@xterm/xterm/css/xterm.css'
 import { useTerminalSocket, type TerminalSize } from '~/composables/useTerminalSocket'
 import { useSessionApi } from '~/composables/useSessionApi'
 import { useViewportMode } from '~/composables/useViewportMode'
-import { ctrlActive, altActive } from '~/composables/useMobileKeyModifiers'
+import { ctrlActive, altActive, controlByte } from '~/composables/useMobileKeyModifiers'
 
 const props = defineProps<{
   sessionName: string | null
@@ -166,10 +166,9 @@ onMounted(() => {
   terminal.onData((data: string) => {
     if (ctrlActive.value && data.length === 1) {
       ctrlActive.value = false
-      const code = data.charCodeAt(0)
-      // Map printable/uppercase to control code (e.g. 'c' → ^C = 0x03)
-      const ctrl = code >= 64 ? code & 0x1f : code
-      socket.sendInput(new Uint8Array([ctrl]))
+      // e.g. 'c' → ^C (0x03); characters without a control code go as typed.
+      const ctrl = controlByte(data)
+      socket.sendInput(ctrl === null ? new TextEncoder().encode(data) : new Uint8Array([ctrl]))
       return
     }
     if (altActive.value && data.length === 1) {
