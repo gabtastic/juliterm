@@ -52,10 +52,10 @@ class FakeWebSocket {
     return this.sent.map((f) => {
       const body = f.slice(1)
       try {
-        return [f[0], JSON.parse(new TextDecoder().decode(body))]
+        return [f[0]!, JSON.parse(new TextDecoder().decode(body))]
       }
       catch {
-        return [f[0], body]
+        return [f[0]!, body]
       }
     })
   }
