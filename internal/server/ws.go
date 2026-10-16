@@ -18,6 +18,9 @@ import (
 	"github.com/coder/websocket"
 )
 
+// maxReadBytes caps a single client frame (large pastes arrive as one frame).
+const maxReadBytes = 4 << 20
+
 // wsConn wraps a single WebSocket connection with its PTY session.
 type wsConn struct {
 	id            string
@@ -71,6 +74,9 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		log.Printf("ws: accept failed: %v", err)
 		return
 	}
+	// coder/websocket defaults to a 32 KiB read limit; xterm sends a paste as a
+	// single input frame, so anything larger would kill the connection.
+	conn.SetReadLimit(maxReadBytes)
 
 	idBytes := make([]byte, 16)
 	if _, err := rand.Read(idBytes); err != nil {
