@@ -205,3 +205,21 @@ func TestWebSocket_SendsHeartbeat(t *testing.T) {
 		}
 	}
 }
+
+func TestHandleResize_RemembersSizeWithoutPTY(t *testing.T) {
+	s := newTestServer(newMockManager())
+	wc := &wsConn{id: "test"}
+
+	s.handleResize(wc, []byte(`{"cols":132,"rows":43}`))
+	if wc.cols != 132 || wc.rows != 43 {
+		t.Fatalf("size = %dx%d, want 132x43", wc.cols, wc.rows)
+	}
+
+	// Invalid sizes are ignored and keep the last good one.
+	for _, payload := range []string{`{"cols":0,"rows":10}`, `{"cols":10,"rows":-1}`, `{"cols":70000,"rows":10}`, `not json`} {
+		s.handleResize(wc, []byte(payload))
+		if wc.cols != 132 || wc.rows != 43 {
+			t.Fatalf("after %s: size = %dx%d, want 132x43", payload, wc.cols, wc.rows)
+		}
+	}
+}

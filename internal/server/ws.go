@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"os/exec"
 	"sync"
@@ -38,6 +39,7 @@ type wsConn struct {
 	sessionID     string             // tmux session this conn is attached to
 	pty           *julipty.Session
 	ptyCancel     context.CancelFunc // cancels forwardPTYOutput goroutine
+	cols, rows    uint16             // last size the client reported, 0 if none yet
 	writeMu       sync.Mutex
 }
 
@@ -187,10 +189,13 @@ func (s *Server) readLoop(ctx context.Context, wc *wsConn) {
 }
 
 // handleSessionSelect processes a session selection from the client.
-// The client sends MsgSessionTree with JSON {"sessionName": "..."}.
+// The client sends MsgSessionTree with JSON {"sessionName": "...", "cols": N,
+// "rows": N}; cols and rows are optional.
 func (s *Server) handleSessionSelect(wc *wsConn, payload []byte) {
 	var sel struct {
 		SessionName string `json:"sessionName"`
+		Cols        int    `json:"cols"`
+		Rows        int    `json:"rows"`
 	}
 	if err := json.Unmarshal(payload, &sel); err != nil || sel.SessionName == "" {
 		_ = wc.writeMessage(protocol.NewErrorMessage("bad_select", "invalid session selection"))
@@ -207,10 +212,18 @@ func (s *Server) handleSessionSelect(wc *wsConn, payload []byte) {
 		wc.sessionID = ""
 	}
 
-	// Spawn a PTY attached to the requested tmux session.
-	// Default to 80x24 — the client will send a resize immediately after.
-	log.Printf("ws[%s]: attaching to session %q", wc.id, sel.SessionName)
-	ps, err := julipty.Attach(s.tmuxMgr.TmuxPath(), sel.SessionName, 80, 24)
+	// Spawn a PTY attached to the requested tmux session at the client's real
+	// size: attaching at a placeholder size and resizing a moment later makes
+	// tmux reflow the shared window twice, garbling full-screen apps.
+	if validSize(sel.Cols, sel.Rows) {
+		wc.cols, wc.rows = uint16(sel.Cols), uint16(sel.Rows)
+	}
+	cols, rows := wc.cols, wc.rows
+	if cols == 0 || rows == 0 {
+		cols, rows = 80, 24
+	}
+	log.Printf("ws[%s]: attaching to session %q at %dx%d", wc.id, sel.SessionName, cols, rows)
+	ps, err := julipty.Attach(s.tmuxMgr.TmuxPath(), sel.SessionName, cols, rows)
 	if err != nil {
 		log.Printf("ws[%s]: pty attach to %q failed: %v", wc.id, sel.SessionName, err)
 		_ = wc.writeMessage(protocol.NewErrorMessage("attach_error", err.Error()))
@@ -281,19 +294,26 @@ func (s *Server) handleInput(wc *wsConn, payload []byte) {
 	}
 }
 
-// handleResize changes the PTY window size.
+// handleResize changes the PTY window size. The size is remembered even
+// before a PTY exists, so the next attach starts at the right size.
 func (s *Server) handleResize(wc *wsConn, payload []byte) {
-	if wc.pty == nil {
-		return
-	}
 	var r protocol.ResizePayload
 	if err := json.Unmarshal(payload, &r); err != nil {
 		return
 	}
-	if r.Cols <= 0 || r.Rows <= 0 {
+	if !validSize(r.Cols, r.Rows) {
+		return
+	}
+	wc.cols, wc.rows = uint16(r.Cols), uint16(r.Rows)
+	if wc.pty == nil {
 		return
 	}
 	if err := wc.pty.Resize(uint16(r.Cols), uint16(r.Rows)); err != nil {
 		log.Printf("ws[%s]: pty resize to %dx%d: %v", wc.id, r.Cols, r.Rows, err)
 	}
+}
+
+// validSize reports whether cols and rows are a usable terminal size.
+func validSize(cols, rows int) bool {
+	return cols > 0 && rows > 0 && cols <= math.MaxUint16 && rows <= math.MaxUint16
 }
