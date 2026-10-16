@@ -40,6 +40,7 @@ type wsConn struct {
 	pty           *julipty.Session
 	ptyCancel     context.CancelFunc // cancels forwardPTYOutput goroutine
 	cols, rows    uint16             // last size the client reported, 0 if none yet
+	notAttachedAt time.Time          // last not_attached error sent (rate limit)
 	writeMu       sync.Mutex
 }
 
@@ -284,9 +285,19 @@ func (s *Server) forwardPTYOutput(ctx context.Context, wc *wsConn, ps *julipty.S
 	}
 }
 
-// handleInput writes raw keyboard bytes directly to the PTY.
+// handleInput writes raw keyboard bytes directly to the PTY. Input that
+// arrives with no PTY attached gets a not_attached error, at most once a
+// second, so the client can re-select its session instead of typing into
+// nothing.
 func (s *Server) handleInput(wc *wsConn, payload []byte) {
-	if wc.pty == nil || len(payload) == 0 {
+	if len(payload) == 0 {
+		return
+	}
+	if wc.pty == nil {
+		if time.Since(wc.notAttachedAt) >= time.Second {
+			wc.notAttachedAt = time.Now()
+			_ = wc.writeMessage(protocol.NewErrorMessage("not_attached", "no session attached"))
+		}
 		return
 	}
 	if _, err := wc.pty.Write(payload); err != nil {

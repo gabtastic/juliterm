@@ -2,6 +2,7 @@ package server
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -221,5 +222,46 @@ func TestHandleResize_RemembersSizeWithoutPTY(t *testing.T) {
 		if wc.cols != 132 || wc.rows != 43 {
 			t.Fatalf("after %s: size = %dx%d, want 132x43", payload, wc.cols, wc.rows)
 		}
+	}
+}
+
+func TestWebSocket_InputWithoutSessionReportsNotAttached(t *testing.T) {
+	_, conn, cleanup := openTestWS(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+
+	// Two keystrokes in quick succession: only one error (rate limited).
+	for _, key := range []string{"a", "b"} {
+		if err := conn.Write(ctx, websocket.MessageBinary, protocol.NewMessage(protocol.MsgInput, []byte(key))); err != nil {
+			t.Fatalf("write input: %v", err)
+		}
+	}
+	// A resize afterwards proves the server processed both inputs.
+	if err := conn.Write(ctx, websocket.MessageBinary, protocol.NewMessage(protocol.MsgResize, []byte(`{"cols":80,"rows":24}`))); err != nil {
+		t.Fatalf("write resize: %v", err)
+	}
+
+	errors := 0
+	readCtx, readCancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer readCancel()
+	for {
+		_, data, err := conn.Read(readCtx)
+		if err != nil {
+			break
+		}
+		msgType, payload, _ := protocol.ParseMessage(data)
+		if msgType != protocol.MsgError {
+			continue
+		}
+		var ep protocol.ErrorPayload
+		if err := json.Unmarshal(payload, &ep); err != nil || ep.Code != "not_attached" {
+			t.Fatalf("unexpected error frame: %s", payload)
+		}
+		errors++
+	}
+	if errors != 1 {
+		t.Fatalf("not_attached errors = %d, want 1", errors)
 	}
 }
