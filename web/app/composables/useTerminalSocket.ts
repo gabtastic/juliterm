@@ -13,6 +13,7 @@ const MSG = {
   SESSION_TREE: 0x04,   // bidirectional: JSON session tree / session select
   SELECT_WINDOW: 0x05,  // client→server: JSON {sessionName, windowIndex}
   ERROR: 0x07,          // server→client: JSON error
+  HEARTBEAT: 0x08,      // server→client: empty liveness frame
 } as const
 
 type Callback<T> = (data: T) => void
@@ -20,6 +21,11 @@ type Callback<T> = (data: T) => void
 interface ErrorPayload {
   code: string
   message: string
+}
+
+interface TerminalSize {
+  cols: number
+  rows: number
 }
 
 // ---- Module-scoped singleton state ----
@@ -38,8 +44,21 @@ const onOutputCbs = new Set<Callback<Uint8Array>>()
 const onSessionTreeCbs = new Set<Callback<unknown[]>>()
 const onErrorCbs = new Set<Callback<ErrorPayload>>()
 
+const onReconnectCbs = new Set<() => void>()
+
 // Buffer last session tree so late subscribers get it immediately
 let lastSessionTree: unknown[] | null = null
+
+// The session this browser is showing and its terminal size. The server only
+// attaches a PTY when it receives a session select, so both are replayed every
+// time a connection opens: after a reconnect, and when the session was picked
+// before the socket finished connecting.
+let currentSession: string | null = null
+let lastSize: TerminalSize | null = null
+
+// Other control frames (window selection) sent while not connected, flushed
+// once the session has been re-selected.
+let pendingControl: Uint8Array[] = []
 
 // ---- Internal helpers ----
 
@@ -71,6 +90,13 @@ function connect() {
     reconnecting.value = false
     reconnectDelay = 500
     error.value = null
+
+    if (currentSession) {
+      reattach()
+    }
+    const queued = pendingControl
+    pendingControl = []
+    for (const frame of queued) send(frame)
   }
 
   ws.onclose = (event: CloseEvent) => {
@@ -117,8 +143,15 @@ function connect() {
       case MSG.ERROR:
         try {
           const parsed = JSON.parse(new TextDecoder().decode(payload)) as ErrorPayload
+          // The server got input with no session attached: attach again
+          // rather than keep typing into nothing.
+          if (parsed.code === 'not_attached' && currentSession) {
+            reattach()
+          }
           for (const cb of onErrorCbs) cb(parsed)
         } catch { /* ignore malformed JSON */ }
+        break
+      case MSG.HEARTBEAT:
         break
     }
   }
@@ -143,6 +176,23 @@ function send(data: Uint8Array) {
   if (ws && ws.readyState === WebSocket.OPEN) {
     ws.send(data)
   }
+}
+
+function sendSelect() {
+  if (!currentSession) return
+  send(buildJsonFrame(MSG.SESSION_TREE, { sessionName: currentSession, ...lastSize }))
+}
+
+// Attach the current session again on this connection. tmux repaints the
+// whole screen on attach, so subscribers reset their terminal first.
+function reattach() {
+  for (const cb of onReconnectCbs) cb()
+  sendSelect()
+  if (lastSize) send(buildJsonFrame(MSG.RESIZE, lastSize))
+}
+
+function isOpen(): boolean {
+  return ws !== null && ws.readyState === WebSocket.OPEN
 }
 
 function buildJsonFrame(msgType: number, payload: object): Uint8Array {
@@ -174,12 +224,26 @@ export function useTerminalSocket() {
   // auth is confirmed. The auth middleware validates the cookie first,
   // and only then should the WebSocket be opened.
 
-  function selectSession(sessionName: string) {
-    send(buildJsonFrame(MSG.SESSION_TREE, { sessionName }))
+  /**
+   * Attach this connection to a session, optionally at a known terminal size
+   * so the server attaches at the right size instead of 80x24. When the
+   * socket isn't open yet, the select is sent as soon as it opens.
+   */
+  function selectSession(sessionName: string, size?: TerminalSize) {
+    currentSession = sessionName
+    if (size) lastSize = size
+    if (isOpen()) sendSelect()
+  }
+
+  /** Forget the current session (e.g. when returning to the session grid). */
+  function clearSession() {
+    currentSession = null
   }
 
   function selectWindow(sessionName: string, windowIndex: number) {
-    send(buildJsonFrame(MSG.SELECT_WINDOW, { sessionName, windowIndex }))
+    const frame = buildJsonFrame(MSG.SELECT_WINDOW, { sessionName, windowIndex })
+    if (isOpen()) send(frame)
+    else pendingControl.push(frame)
   }
 
   function sendInput(data: Uint8Array) {
@@ -190,7 +254,8 @@ export function useTerminalSocket() {
   }
 
   function sendResize(cols: number, rows: number) {
-    send(buildJsonFrame(MSG.RESIZE, { cols, rows }))
+    lastSize = { cols, rows }
+    send(buildJsonFrame(MSG.RESIZE, lastSize))
   }
 
   /** Subscribe to PTY output. Returns unsubscribe function. */
@@ -208,6 +273,15 @@ export function useTerminalSocket() {
     return () => { onSessionTreeCbs.delete(cb) }
   }
 
+  /**
+   * Subscribe to re-attaches: after a reconnect, or when the server reported
+   * that nothing was attached. Returns unsubscribe function.
+   */
+  function onReconnect(cb: () => void): () => void {
+    onReconnectCbs.add(cb)
+    return () => { onReconnectCbs.delete(cb) }
+  }
+
   /** Subscribe to server errors. Returns unsubscribe function. */
   function onError(cb: Callback<ErrorPayload>): () => void {
     onErrorCbs.add(cb)
@@ -219,6 +293,7 @@ export function useTerminalSocket() {
     reconnecting: readonly(reconnecting),
     error: readonly(error),
     selectSession,
+    clearSession,
     selectWindow,
     sendInput,
     sendResize,
@@ -226,8 +301,9 @@ export function useTerminalSocket() {
     connect,
     onOutput,
     onSessionTree,
+    onReconnect,
     onError,
   }
 }
 
-export type { ErrorPayload }
+export type { ErrorPayload, TerminalSize }

@@ -5,7 +5,7 @@ import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
 import '@xterm/xterm/css/xterm.css'
 
-import { useTerminalSocket } from '~/composables/useTerminalSocket'
+import { useTerminalSocket, type TerminalSize } from '~/composables/useTerminalSocket'
 import { useSessionApi } from '~/composables/useSessionApi'
 import { useViewportMode } from '~/composables/useViewportMode'
 import { ctrlActive, altActive } from '~/composables/useMobileKeyModifiers'
@@ -72,6 +72,20 @@ let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
 let resizeObserver: ResizeObserver | null = null
 let unsubOutput: (() => void) | null = null
+let unsubReconnect: (() => void) | null = null
+
+// Fit the terminal to its container and return the resulting size, or null
+// when the container is collapsed (hidden, mid-transition): fitting then
+// would squash the terminal, and sending that size would shrink the shared
+// tmux window for every client.
+function fitTerminal(): TerminalSize | null {
+  if (!terminal || !fitAddon || !terminalRef.value) return null
+  if (terminalRef.value.clientWidth === 0) return null
+  const dims = fitAddon.proposeDimensions()
+  if (!dims || dims.cols < 10) return null
+  fitAddon.fit()
+  return { cols: terminal.cols, rows: terminal.rows }
+}
 
 function stopRightClickPropagation(e: MouseEvent) {
   if (e.button === 2) e.stopPropagation()
@@ -157,6 +171,13 @@ onMounted(() => {
     }
   })
 
+  // The session is attached again (after a reconnect): tmux repaints the
+  // whole screen, so start from a clean terminal rather than draw over the
+  // stale one.
+  unsubReconnect = socket.onReconnect(() => {
+    terminal?.reset()
+  })
+
   // Resize observer — fit terminal to container, then tell server
   resizeObserver = new ResizeObserver(() => {
     requestAnimationFrame(() => {
@@ -175,20 +196,19 @@ onMounted(() => {
 watch(
   () => props.sessionName,
   (newSession, oldSession) => {
-    if (terminal && oldSession) {
-      terminal.clear()
-      terminal.reset()
-    }
-
     if (newSession) {
-      socket.selectSession(newSession)
-      // Send resize after selecting so the PTY gets correct dimensions
+      // Select once laid out, with the fitted size, so the server attaches
+      // at the right size instead of 80x24 and resizing a moment later.
+      // Reset in the same frame, so output still arriving from the old
+      // session isn't drawn after the reset.
       nextTick(() => {
         requestAnimationFrame(() => {
-          if (fitAddon && terminal) {
-            fitAddon.fit()
-            socket.sendResize(terminal.cols, terminal.rows)
+          if (props.sessionName !== newSession) return
+          if (terminal && oldSession) {
+            terminal.clear()
+            terminal.reset()
           }
+          socket.selectSession(newSession, fitTerminal() ?? undefined)
         })
       })
     }
@@ -199,6 +219,9 @@ watch(
 onBeforeUnmount(() => {
   unsubOutput?.()
   unsubOutput = null
+  unsubReconnect?.()
+  unsubReconnect = null
+  socket.clearSession()
   terminalRef.value?.removeEventListener('mousedown', stopRightClickPropagation, true)
   if (resizeObserver) {
     resizeObserver.disconnect()
