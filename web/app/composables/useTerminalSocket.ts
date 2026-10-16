@@ -34,10 +34,20 @@ const connected = ref(false)
 const reconnecting = ref(false)
 const error = ref<string | null>(null)
 
+// The server sends a heartbeat every 25s, so a connection that has delivered
+// nothing for a minute is dead even if the browser still reports it open
+// (laptop sleep, network switch).
+const LIVENESS_CHECK_MS = 10_000
+const STALE_AFTER_MS = 60_000
+const MIN_RECONNECT_DELAY = 500
+
 let ws: WebSocket | null = null
 let reconnectTimer: ReturnType<typeof setTimeout> | null = null
-let reconnectDelay = 500
+let reconnectDelay = MIN_RECONNECT_DELAY
 let intentionallyClosed = false
+let lastMessageAt = 0
+let livenessTimer: ReturnType<typeof setInterval> | null = null
+let lifecycleListening = false
 
 // Use Set for O(1) add/delete, prevents duplicates
 const onOutputCbs = new Set<Callback<Uint8Array>>()
@@ -75,6 +85,7 @@ function connect() {
 
   intentionallyClosed = false
   error.value = null
+  watchLiveness()
 
   try {
     ws = new WebSocket(getWsUrl())
@@ -88,8 +99,9 @@ function connect() {
   ws.onopen = () => {
     connected.value = true
     reconnecting.value = false
-    reconnectDelay = 500
+    reconnectDelay = MIN_RECONNECT_DELAY
     error.value = null
+    lastMessageAt = Date.now()
 
     if (currentSession) {
       reattach()
@@ -122,6 +134,7 @@ function connect() {
   }
 
   ws.onmessage = (event: MessageEvent) => {
+    lastMessageAt = Date.now()
     if (!(event.data instanceof ArrayBuffer)) return
     const buf = new Uint8Array(event.data)
     if (buf.length === 0) return
@@ -154,6 +167,58 @@ function connect() {
       case MSG.HEARTBEAT:
         break
     }
+  }
+}
+
+// Drop a connection that stopped delivering frames. Its close handshake would
+// wait on a dead network, so detach it and reconnect right away.
+function abandonSocket() {
+  if (!ws) return
+  const dead = ws
+  ws = null
+  dead.onopen = null
+  dead.onclose = null
+  dead.onerror = null
+  dead.onmessage = null
+  try { dead.close() } catch { /* already closed */ }
+  connected.value = false
+  scheduleReconnect()
+}
+
+function checkLiveness() {
+  if (isOpen() && Date.now() - lastMessageAt > STALE_AFTER_MS) {
+    abandonSocket()
+  }
+}
+
+// The tab became visible or the network came back: verify the connection now
+// and, if it's down, reconnect immediately instead of waiting out a backoff
+// that may have grown to 30s.
+function wake() {
+  if (intentionallyClosed) return
+  checkLiveness()
+  reconnectDelay = MIN_RECONNECT_DELAY
+  if (!ws) {
+    if (reconnectTimer) {
+      clearTimeout(reconnectTimer)
+      reconnectTimer = null
+    }
+    connect()
+  }
+}
+
+function onVisibilityChange() {
+  if (document.visibilityState === 'visible') wake()
+}
+
+function watchLiveness() {
+  if (!livenessTimer) {
+    livenessTimer = setInterval(checkLiveness, LIVENESS_CHECK_MS)
+  }
+  if (!lifecycleListening) {
+    lifecycleListening = true
+    document.addEventListener('visibilitychange', onVisibilityChange)
+    window.addEventListener('online', wake)
   }
 }
 
@@ -208,6 +273,15 @@ function disconnect() {
   if (reconnectTimer) {
     clearTimeout(reconnectTimer)
     reconnectTimer = null
+  }
+  if (livenessTimer) {
+    clearInterval(livenessTimer)
+    livenessTimer = null
+  }
+  if (lifecycleListening) {
+    lifecycleListening = false
+    document.removeEventListener('visibilitychange', onVisibilityChange)
+    window.removeEventListener('online', wake)
   }
   if (ws) {
     ws.close()

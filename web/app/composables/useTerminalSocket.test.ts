@@ -67,12 +67,21 @@ const SELECT_WINDOW = 0x05
 const ERROR = 0x07
 const HEARTBEAT = 0x08
 
-// The composable is a module-scoped singleton: load a fresh copy per test.
+// The composable is a module-scoped singleton: load a fresh copy per test,
+// and disconnect every copy afterwards so its window listeners go away.
+const loaded: Array<{ disconnect: () => void }> = []
+
 async function loadSocket() {
   vi.resetModules()
   const mod = await import('./useTerminalSocket')
-  return mod.useTerminalSocket()
+  const socket = mod.useTerminalSocket()
+  loaded.push(socket)
+  return socket
 }
+
+afterEach(() => {
+  for (const socket of loaded.splice(0)) socket.disconnect()
+})
 
 function latest(): FakeWebSocket {
   const ws = FakeWebSocket.instances.at(-1)
@@ -182,5 +191,62 @@ describe('useTerminalSocket', () => {
     latest().open()
     latest().receive(HEARTBEAT)
     expect(output).not.toHaveBeenCalled()
+  })
+})
+
+describe('useTerminalSocket liveness', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('keeps a connection that receives heartbeats', async () => {
+    const socket = await loadSocket()
+    socket.connect()
+    latest().open()
+
+    for (let i = 0; i < 6; i++) {
+      vi.advanceTimersByTime(25_000)
+      latest().receive(HEARTBEAT)
+    }
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    expect(socket.connected.value).toBe(true)
+  })
+
+  it('drops a silent connection and reconnects', async () => {
+    const socket = await loadSocket()
+    socket.connect()
+    const dead = latest()
+    dead.open()
+
+    vi.advanceTimersByTime(70_000)
+    expect(socket.connected.value).toBe(false)
+    expect(dead.readyState).toBe(FakeWebSocket.CLOSED)
+
+    vi.advanceTimersByTime(1000)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+  })
+
+  it('reconnects immediately when the network comes back', async () => {
+    const socket = await loadSocket()
+    socket.connect()
+    latest().open()
+
+    // Several failed attempts grow the backoff.
+    for (let i = 0; i < 4; i++) {
+      latest().drop()
+      vi.advanceTimersByTime(30_000)
+    }
+    latest().drop()
+    const attempts = FakeWebSocket.instances.length
+
+    window.dispatchEvent(new Event('online'))
+    expect(FakeWebSocket.instances).toHaveLength(attempts + 1)
   })
 })
