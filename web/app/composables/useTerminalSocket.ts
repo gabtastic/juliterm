@@ -87,6 +87,8 @@ function connect() {
   error.value = null
   watchLiveness()
 
+  let opened = false
+
   try {
     ws = new WebSocket(getWsUrl())
     ws.binaryType = 'arraybuffer'
@@ -97,6 +99,7 @@ function connect() {
   }
 
   ws.onopen = () => {
+    opened = true
     connected.value = true
     reconnecting.value = false
     reconnectDelay = MIN_RECONNECT_DELAY
@@ -118,14 +121,16 @@ function connect() {
     // Close code 4001 = session revoked by server (logout or expiry).
     // Stop reconnecting and redirect to login.
     if (event.code === 4001) {
-      intentionallyClosed = true
-      resetAuth()
-      window.location.href = '/login'
+      goToLogin()
       return
     }
 
     if (!intentionallyClosed) {
       scheduleReconnect()
+      // A refused upgrade (expired login, or the server restarted and lost
+      // its in-memory sessions) surfaces as a plain 1006 close, so check
+      // whether we are still logged in rather than retry forever.
+      if (!opened) void checkAuth()
     }
   }
 
@@ -167,6 +172,25 @@ function connect() {
       case MSG.HEARTBEAT:
         break
     }
+  }
+}
+
+function goToLogin() {
+  intentionallyClosed = true
+  if (reconnectTimer) {
+    clearTimeout(reconnectTimer)
+    reconnectTimer = null
+  }
+  resetAuth()
+  window.location.href = '/login'
+}
+
+async function checkAuth() {
+  try {
+    const res = await fetch('/api/sessions', { credentials: 'same-origin' })
+    if (res.status === 401 && !intentionallyClosed) goToLogin()
+  } catch {
+    // Server unreachable: keep retrying the WebSocket.
   }
 }
 

@@ -94,6 +94,8 @@ describe('useTerminalSocket', () => {
     FakeWebSocket.instances = []
     vi.useFakeTimers()
     vi.stubGlobal('WebSocket', FakeWebSocket)
+    // Refused connections check the login over HTTP; never hit the network.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 200 }))
   })
 
   afterEach(() => {
@@ -199,6 +201,8 @@ describe('useTerminalSocket liveness', () => {
     FakeWebSocket.instances = []
     vi.useFakeTimers()
     vi.stubGlobal('WebSocket', FakeWebSocket)
+    // Refused connections check the login over HTTP; never hit the network.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 200 }))
   })
 
   afterEach(() => {
@@ -248,5 +252,65 @@ describe('useTerminalSocket liveness', () => {
 
     window.dispatchEvent(new Event('online'))
     expect(FakeWebSocket.instances).toHaveLength(attempts + 1)
+  })
+})
+
+describe('useTerminalSocket auth', () => {
+  beforeEach(() => {
+    FakeWebSocket.instances = []
+    vi.useFakeTimers()
+    vi.stubGlobal('WebSocket', FakeWebSocket)
+    // Refused connections check the login over HTTP; never hit the network.
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue({ status: 200 }))
+  })
+
+  afterEach(() => {
+    vi.useRealTimers()
+    vi.unstubAllGlobals()
+  })
+
+  it('goes to the login page when a refused connection turns out to be logged out', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ status: 401 })
+    vi.stubGlobal('fetch', fetchMock)
+    // A plain object, so assigning href doesn't make happy-dom navigate.
+    const realLocation = Object.getOwnPropertyDescriptor(window, 'location')!
+    const location = { href: 'http://localhost/' }
+    Object.defineProperty(window, 'location', { configurable: true, value: location })
+    const { resetAuth } = await import('~/middleware/auth')
+    const socket = await loadSocket()
+
+    socket.connect()
+    latest().drop()
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalledWith('/api/sessions', expect.anything()))
+    await Promise.resolve()
+
+    expect(vi.mocked(resetAuth)).toHaveBeenCalled()
+    expect(location.href).toBe('/login')
+    vi.advanceTimersByTime(60_000)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+    Object.defineProperty(window, 'location', realLocation)
+  })
+
+  it('keeps retrying when still logged in', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ status: 200 })
+    vi.stubGlobal('fetch', fetchMock)
+    const socket = await loadSocket()
+
+    socket.connect()
+    latest().drop()
+    await vi.waitFor(() => expect(fetchMock).toHaveBeenCalled())
+    vi.advanceTimersByTime(1000)
+    expect(FakeWebSocket.instances).toHaveLength(2)
+  })
+
+  it('does not check auth when an open connection drops', async () => {
+    const fetchMock = vi.fn().mockResolvedValue({ status: 200 })
+    vi.stubGlobal('fetch', fetchMock)
+    const socket = await loadSocket()
+
+    socket.connect()
+    latest().open()
+    latest().drop()
+    expect(fetchMock).not.toHaveBeenCalled()
   })
 })
