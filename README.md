@@ -2,7 +2,11 @@
 
 # Juli
 
-[![CI](https://github.com/cihann/juliterm/actions/workflows/ci.yml/badge.svg)](https://github.com/cihann/juliterm/actions/workflows/ci.yml)
+> This is a fork of [cihann/juliterm](https://github.com/cihann/juliterm) that
+> carries the upstream pull requests still awaiting review (#3, #4, #5, #6) and
+> publishes its own releases. Changes are offered back upstream.
+
+[![CI](https://github.com/gabtastic/juliterm/actions/workflows/ci.yml/badge.svg)](https://github.com/gabtastic/juliterm/actions/workflows/ci.yml)
 [![Go](https://img.shields.io/badge/Go-1.25+-00ADD8?logo=go&logoColor=white)](https://go.dev)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -17,10 +21,10 @@ One binary. No dependencies besides tmux; `cloudflared` is optional and only nee
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/cihann/juliterm/main/install.sh | sh
+curl -fsSL https://raw.githubusercontent.com/gabtastic/juliterm/main/install.sh | sh
 ```
 
-Or download a binary manually from the [releases page](https://github.com/cihann/juliterm/releases).
+Or download a binary manually from the [releases page](https://github.com/gabtastic/juliterm/releases).
 
 ### Build from source
 
