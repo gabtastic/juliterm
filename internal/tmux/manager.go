@@ -45,6 +45,11 @@ type Manager struct {
 	clients map[string]*ControlClient // sessionID -> client
 	watcher *ControlClient            // dedicated watcher for %sessions-changed
 
+	// syncMu serializes syncSessions, which runs from the watcher, the CRUD
+	// handlers and the watcher-liveness goroutine. Concurrent runs could both
+	// add the same session and leak a control client.
+	syncMu sync.Mutex
+
 	ctx    context.Context
 	cancel context.CancelFunc
 
@@ -585,8 +590,14 @@ func (m *Manager) addSession(sessionID string) error {
 	}
 
 	m.mu.Lock()
+	old := m.clients[sessionID]
 	m.clients[sessionID] = client
 	m.mu.Unlock()
+
+	// Never orphan a running client: stop one this replaces.
+	if old != nil {
+		_ = old.Stop()
+	}
 
 	m.tree.UpdateSession(session)
 	return nil
@@ -617,6 +628,9 @@ func (m *Manager) removeSession(sessionID string) {
 // syncSessions compares the set of currently running tmux sessions against
 // the known sessions in the tree and adds/removes as needed.
 func (m *Manager) syncSessions() {
+	m.syncMu.Lock()
+	defer m.syncMu.Unlock()
+
 	sessions, err := m.listSessions()
 	if err != nil {
 		log.Printf("tmux manager: syncSessions list failed (keeping existing tree): %v", err)
