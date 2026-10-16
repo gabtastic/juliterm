@@ -39,6 +39,7 @@ type wsConn struct {
 	sessionID     string             // tmux session this conn is attached to
 	pty           *julipty.Session
 	ptyCancel     context.CancelFunc // cancels forwardPTYOutput goroutine
+	ptyDone       chan struct{}      // closed when forwardPTYOutput has exited
 	cols, rows    uint16             // last size the client reported, 0 if none yet
 	notAttachedAt time.Time          // last not_attached error sent (rate limit)
 	writeMu       sync.Mutex
@@ -107,12 +108,7 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 	defer func() {
 		log.Printf("ws[%s]: disconnected", wc.id)
 		s.fanout.UnregisterConn(wc)
-		if wc.ptyCancel != nil {
-			wc.ptyCancel()
-		}
-		if wc.pty != nil {
-			wc.pty.Close()
-		}
+		wc.detachPTY()
 		conn.CloseNow()
 	}()
 
@@ -203,15 +199,10 @@ func (s *Server) handleSessionSelect(wc *wsConn, payload []byte) {
 		return
 	}
 
-	// Cancel and close existing PTY if switching sessions.
-	if wc.ptyCancel != nil {
-		wc.ptyCancel()
-	}
-	if wc.pty != nil {
-		wc.pty.Close()
-		wc.pty = nil
-		wc.sessionID = ""
-	}
+	// Detach from the current session first. detachPTY waits for the old
+	// output forwarder to exit, so none of the old session's output can reach
+	// the browser after the new session starts.
+	wc.detachPTY()
 
 	// Spawn a PTY attached to the requested tmux session at the client's real
 	// size: attaching at a placeholder size and resizing a moment later makes
@@ -233,12 +224,36 @@ func (s *Server) handleSessionSelect(wc *wsConn, payload []byte) {
 	log.Printf("ws[%s]: attached to session %q, streaming output", wc.id, sel.SessionName)
 
 	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
 	wc.pty = ps
 	wc.ptyCancel = cancel
+	wc.ptyDone = done
 	wc.sessionID = sel.SessionName
 
 	// Start forwarding PTY output to WebSocket.
-	go s.forwardPTYOutput(ctx, wc, ps)
+	go func() {
+		defer close(done)
+		s.forwardPTYOutput(ctx, wc, ps)
+	}()
+}
+
+// detachPTY stops the output forwarder, closes the PTY and waits for the
+// forwarder to exit. It is a no-op when nothing is attached. Only the read
+// loop goroutine (and the connection's cleanup) may call it.
+func (wc *wsConn) detachPTY() {
+	if wc.ptyCancel != nil {
+		wc.ptyCancel()
+	}
+	if wc.pty != nil {
+		wc.pty.Close()
+	}
+	if wc.ptyDone != nil {
+		<-wc.ptyDone
+	}
+	wc.pty = nil
+	wc.ptyCancel = nil
+	wc.ptyDone = nil
+	wc.sessionID = ""
 }
 
 // handleSelectWindow switches the active window in the attached tmux session.
@@ -265,6 +280,11 @@ func (s *Server) forwardPTYOutput(ctx context.Context, wc *wsConn, ps *julipty.S
 	buf := make([]byte, 32*1024)
 	for {
 		n, err := ps.Read(buf)
+		// A chunk read just before a session switch belongs to the old
+		// session; drop it rather than draw it into the new one.
+		if ctx.Err() != nil {
+			return
+		}
 		if n > 0 {
 			msg := protocol.NewMessage(protocol.MsgOutput, buf[:n])
 			if writeErr := wc.writeMessage(msg); writeErr != nil {
@@ -276,6 +296,9 @@ func (s *Server) forwardPTYOutput(ctx context.Context, wc *wsConn, ps *julipty.S
 			if err != io.EOF && ctx.Err() == nil {
 				log.Printf("ws[%s]: pty read error: %v", wc.id, err)
 			}
+			// tmux exited on its own (session killed or detached): release the
+			// PTY fd now rather than at the next switch or disconnect.
+			_ = ps.Close()
 			// Only notify client if this wasn't an intentional close (session switch)
 			if ctx.Err() == nil {
 				_ = wc.writeMessage(protocol.NewErrorMessage("session_ended", "tmux session ended"))
