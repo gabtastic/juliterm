@@ -52,7 +52,8 @@ type Manager struct {
 	onEvent  func(event Event)                // unified event callback
 
 	// Excerpt stability tracking: detects when terminal output stops changing
-	// (agent likely waiting for user input).
+	// (agent likely waiting for user input). Guarded by mu: the poller writes
+	// them while removeSession can run from the watcher or HTTP handlers.
 	prevExcerpts       map[string]string // session ID → last captured excerpt
 	excerptStableCount map[string]int    // session ID → consecutive stable cycles
 }
@@ -607,8 +608,10 @@ func (m *Manager) removeSession(sessionID string) {
 	m.tree.RemoveSession(sessionID)
 
 	// Clean up excerpt stability state for this session.
+	m.mu.Lock()
 	delete(m.prevExcerpts, sessionID)
 	delete(m.excerptStableCount, sessionID)
+	m.mu.Unlock()
 }
 
 // syncSessions compares the set of currently running tmux sessions against
@@ -944,18 +947,7 @@ func (m *Manager) enrichMetadata() {
 			excerpt = m.captureMonitoringExcerpt(info.paneID)
 		}
 
-		// Track excerpt stability: if the terminal output hasn't changed for
-		// ≥2 consecutive cycles, the agent is likely waiting for user input.
-		excerptStable := false
-		if prev, ok := m.prevExcerpts[s.ID]; ok && excerpt != "" && excerpt == prev {
-			m.excerptStableCount[s.ID]++
-			if m.excerptStableCount[s.ID] >= 2 {
-				excerptStable = true
-			}
-		} else {
-			m.excerptStableCount[s.ID] = 0
-		}
-		m.prevExcerpts[s.ID] = excerpt
+		excerptStable := m.trackExcerpt(s.ID, excerpt)
 
 		inputs := buildMonitoringInputs(s, info, psSnapshot, excerpt, now)
 		inputs.ExcerptStable = excerptStable
@@ -1037,4 +1029,22 @@ func escapeForTmux(s string) string {
 	}
 	b.WriteByte('"')
 	return b.String()
+}
+
+// trackExcerpt records the latest monitoring excerpt for a session and reports
+// whether it is stable: unchanged for at least 2 consecutive cycles, which
+// means the agent is likely waiting for user input.
+func (m *Manager) trackExcerpt(sessionID, excerpt string) bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	stable := false
+	if prev, ok := m.prevExcerpts[sessionID]; ok && excerpt != "" && excerpt == prev {
+		m.excerptStableCount[sessionID]++
+		stable = m.excerptStableCount[sessionID] >= 2
+	} else {
+		m.excerptStableCount[sessionID] = 0
+	}
+	m.prevExcerpts[sessionID] = excerpt
+	return stable
 }
