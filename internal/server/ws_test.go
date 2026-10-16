@@ -185,3 +185,23 @@ func TestWebSocket_LargeInputFrameKeepsConnection(t *testing.T) {
 		t.Fatalf("connection closed after large frame: %v", err)
 	}
 }
+
+func TestWebSocket_SendsHeartbeat(t *testing.T) {
+	defer func(interval time.Duration) { keepAliveInterval = interval }(keepAliveInterval)
+	keepAliveInterval = 20 * time.Millisecond
+
+	_, conn, cleanup := openTestWS(t)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	for {
+		_, data, err := conn.Read(ctx)
+		if err != nil {
+			t.Fatalf("no heartbeat before error: %v", err)
+		}
+		if msgType, _, _ := protocol.ParseMessage(data); msgType == protocol.MsgHeartbeat {
+			return
+		}
+	}
+}

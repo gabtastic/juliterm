@@ -21,6 +21,15 @@ import (
 // maxReadBytes caps a single client frame (large pastes arrive as one frame).
 const maxReadBytes = 4 << 20
 
+// Keepalive timing. A ping detects half-open connections (laptop sleep,
+// network switch) that would otherwise hang forever, and the heartbeat frame
+// lets the browser detect the same thing, since it cannot see pings. Both also
+// keep proxies such as Cloudflare from dropping an idle connection.
+var (
+	keepAliveInterval = 25 * time.Second
+	pingTimeout       = 10 * time.Second
+)
+
 // wsConn wraps a single WebSocket connection with its PTY session.
 type wsConn struct {
 	id            string
@@ -110,9 +119,41 @@ func (s *Server) handleWebSocket(w http.ResponseWriter, r *http.Request) {
 		_ = wc.writeMessage(protocol.NewSessionTreeMessage(treeJSON))
 	}
 
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go wc.keepAlive(ctx)
+
 	// Read loop — handle messages from the browser.
-	ctx := context.Background()
 	s.readLoop(ctx, wc)
+}
+
+// keepAlive pings the client and sends a heartbeat frame every
+// keepAliveInterval until ctx ends. A failed ping closes the connection, which
+// ends the read loop.
+func (wc *wsConn) keepAlive(ctx context.Context) {
+	ticker := time.NewTicker(keepAliveInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+
+		pingCtx, cancel := context.WithTimeout(ctx, pingTimeout)
+		err := wc.conn.Ping(pingCtx)
+		cancel()
+		if err != nil {
+			if ctx.Err() == nil {
+				log.Printf("ws[%s]: ping failed, closing: %v", wc.id, err)
+				wc.conn.CloseNow()
+			}
+			return
+		}
+		if err := wc.writeMessage(protocol.NewHeartbeatMessage()); err != nil {
+			return
+		}
+	}
 }
 
 // readLoop reads binary messages from the WebSocket and dispatches them.
