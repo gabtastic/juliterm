@@ -14,7 +14,8 @@ import { createGlyphSubstitution } from '~/utils/glyphSubstitution'
 import { focusIsHeldForTerminal, markAsTerminalInput } from '~/utils/focusHandoff'
 import { parseOsc52 } from '~/utils/osc52'
 import { copyText } from '~/utils/clipboard'
-import type { ScreenBox } from '~/utils/touchCells'
+import { cellAt, linearSelection, type Cell, type ScreenBox } from '~/utils/touchCells'
+import { selectMode } from '~/composables/useTerminalTouch'
 
 const props = defineProps<{
   sessionName: string | null
@@ -199,6 +200,11 @@ function loadWebglRenderer() {
 // synthetic wheel events, one per cell height of movement: xterm reports them
 // to tmux as mouse-wheel input, or scrolls its own buffer when no app has
 // mouse mode on. Taps are left alone so they still focus the terminal.
+//
+// In Select mode (the key bar's Select key) a drag instead makes xterm's own
+// selection over the visible screen and lifting the finger copies it; the
+// touchend is a user gesture, so Safari allows the clipboard write. Select
+// mode turns itself off after a copy, so the next swipe scrolls again.
 const TAP_SLOP_PX = 8
 
 interface TouchState {
@@ -206,6 +212,7 @@ interface TouchState {
   lastY: number
   accum: number
   scrolling: boolean
+  anchor: Cell | null
 }
 let touch: TouchState | null = null
 
@@ -235,12 +242,32 @@ function onTouchStart(e: TouchEvent) {
     return
   }
   const t = e.touches[0]!
-  touch = { startY: t.clientY, lastY: t.clientY, accum: 0, scrolling: false }
+  touch = { startY: t.clientY, lastY: t.clientY, accum: 0, scrolling: false, anchor: null }
+  if (selectMode.value) {
+    const box = screenBox()
+    if (!box) return
+    touch.anchor = cellAt(t.clientX, t.clientY, box, terminal.cols, terminal.rows)
+    terminal.clearSelection()
+  }
+}
+
+function selectTo(x: number, y: number) {
+  if (!terminal || !touch?.anchor) return
+  const box = screenBox()
+  if (!box) return
+  const current = cellAt(x, y, box, terminal.cols, terminal.rows)
+  const sel = linearSelection(touch.anchor, current, terminal.cols)
+  terminal.select(sel.col, sel.row + terminal.buffer.active.viewportY, sel.length)
 }
 
 function onTouchMove(e: TouchEvent) {
   if (!touch || !terminal || e.touches.length !== 1) return
   const t = e.touches[0]!
+  if (touch.anchor) {
+    e.preventDefault()
+    selectTo(t.clientX, t.clientY)
+    return
+  }
   if (!touch.scrolling && Math.abs(t.clientY - touch.startY) < TAP_SLOP_PX) return
   touch.scrolling = true
   e.preventDefault() // no page rubber-banding while scrolling the terminal
@@ -258,7 +285,16 @@ function onTouchMove(e: TouchEvent) {
 }
 
 function onTouchEnd() {
+  const selecting = touch?.anchor
   touch = null
+  if (!selecting || !terminal) return
+  const text = terminal.getSelection()
+  if (!text) return
+  // Called synchronously from touchend, so it counts as a user gesture.
+  void copyText(text).then((ok) => {
+    showClipNotice(ok ? 'Copied' : 'Copy failed')
+    if (ok) selectMode.value = false
+  })
 }
 
 function stopRightClickPropagation(e: MouseEvent) {
