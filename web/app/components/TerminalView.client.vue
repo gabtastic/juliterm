@@ -331,6 +331,11 @@ onBeforeUnmount(() => {
 
 .terminal-element {
   flex: 1;
+  /* A flex item can't shrink below its content by default, so without these
+     the terminal never gets shorter: xterm's rows hold the element open, the
+     ResizeObserver sees no change, and tmux keeps the old row count. */
+  min-height: 0;
+  overflow: hidden;
   padding: 4px;
 }
 
