@@ -145,7 +145,10 @@ onMounted(() => {
   terminal = new Terminal({
     cursorBlink: true,
     fontSize: 14,
-    fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', 'Menlo', monospace",
+    // Color emoji fonts come right after the monospace fonts so symbols those
+    // lack (Claude Code's ⏺ bullet, ⚠, ✅) render as native terminals draw
+    // them, instead of whatever text glyph the browser's fallback picks.
+    fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', 'Menlo', 'Apple Color Emoji', 'Segoe UI Emoji', 'Noto Color Emoji', monospace",
     theme: {
       background: '#0d1117',
       foreground: '#c9d1d9',
