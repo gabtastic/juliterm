@@ -379,10 +379,11 @@ onMounted(() => {
     // Without this, tmux's native menu appears underneath our HTML context menu.
     terminalRef.value.addEventListener('mousedown', stopRightClickPropagation, true)
 
-    terminalRef.value.addEventListener('touchstart', onTouchStart, { passive: true })
-    terminalRef.value.addEventListener('touchmove', onTouchMove, { passive: false })
-    terminalRef.value.addEventListener('touchend', onTouchEnd)
-    terminalRef.value.addEventListener('touchcancel', onTouchEnd)
+    // Capture phase, so these run before xterm's own gesture handling.
+    terminalRef.value.addEventListener('touchstart', onTouchStart, { passive: true, capture: true })
+    terminalRef.value.addEventListener('touchmove', onTouchMove, { passive: false, capture: true })
+    terminalRef.value.addEventListener('touchend', onTouchEnd, { capture: true })
+    terminalRef.value.addEventListener('touchcancel', onTouchEnd, { capture: true })
   }
 
   // Handle user input — send raw bytes directly to PTY.
@@ -478,10 +479,10 @@ onBeforeUnmount(() => {
   unsubReconnect = null
   socket.clearSession()
   terminalRef.value?.removeEventListener('mousedown', stopRightClickPropagation, true)
-  terminalRef.value?.removeEventListener('touchstart', onTouchStart)
-  terminalRef.value?.removeEventListener('touchmove', onTouchMove)
-  terminalRef.value?.removeEventListener('touchend', onTouchEnd)
-  terminalRef.value?.removeEventListener('touchcancel', onTouchEnd)
+  terminalRef.value?.removeEventListener('touchstart', onTouchStart, { capture: true })
+  terminalRef.value?.removeEventListener('touchmove', onTouchMove, { capture: true })
+  terminalRef.value?.removeEventListener('touchend', onTouchEnd, { capture: true })
+  terminalRef.value?.removeEventListener('touchcancel', onTouchEnd, { capture: true })
   window.removeEventListener('keydown', dismissClipNoticeOnEscape, true)
   setPasteHandler(null)
   dismissClipNotice()
@@ -581,6 +582,10 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: hidden;
   padding: 4px;
+  /* juli handles finger gestures here (swipe to scroll, Select-mode drags).
+     Without this, iPadOS claims the swipe for native scrolling of xterm's
+     viewport and cancels the touch before juli sees it moving. */
+  touch-action: none;
 }
 
 /* Ensure xterm fills the container */
