@@ -2,6 +2,7 @@
 import { ref, onBeforeUnmount } from 'vue'
 import { useViewportMode } from '~/composables/useViewportMode'
 import { useSidebarLayout } from '~/composables/useSidebarLayout'
+import { holdFocusForTerminal } from '~/utils/focusHandoff'
 
 definePageMeta({
   middleware: 'auth',
@@ -79,6 +80,9 @@ onBeforeUnmount(() => {
 })
 
 function handleSelectSession(sessionName: string) {
+  // Runs inside the tap that picked the session, which is the only moment
+  // iPadOS lets us take keyboard focus; the terminal takes it over once ready.
+  holdFocusForTerminal()
   sessionTree.selectSession(sessionName)
   router.replace({ query: { session: sessionName } })
 }

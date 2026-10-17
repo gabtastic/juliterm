@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -10,6 +10,8 @@ import { useTerminalSocket, type TerminalSize } from '~/composables/useTerminalS
 import { useSessionApi } from '~/composables/useSessionApi'
 import { useViewportMode } from '~/composables/useViewportMode'
 import { ctrlActive, altActive, controlByte } from '~/composables/useMobileKeyModifiers'
+import { createGlyphSubstitution } from '~/utils/glyphSubstitution'
+import { focusIsHeldForTerminal, markAsTerminalInput } from '~/utils/focusHandoff'
 
 const props = defineProps<{
   sessionName: string | null
@@ -21,9 +23,14 @@ const emit = defineEmits<{
 
 const terminalRef = ref<HTMLDivElement | null>(null)
 const socket = useTerminalSocket()
+const glyphs = createGlyphSubstitution()
 const sessionTree = useSessionTree()
 const api = useSessionApi()
 const { isMobile } = useViewportMode(1024)
+// Touch devices get the key bar at any width: an iPad in landscape is wider
+// than 1024px, and its hardware keyboards often have no Esc key.
+const hasTouchScreen = typeof window !== 'undefined' && window.matchMedia('(any-pointer: coarse)').matches
+const showKeyBar = computed(() => isMobile.value || hasTouchScreen)
 
 // Context menu state
 const ctxVisible = ref(false)
@@ -177,6 +184,7 @@ onMounted(() => {
 
   if (terminalRef.value) {
     terminal.open(terminalRef.value)
+    if (terminal.textarea) markAsTerminalInput(terminal.textarea)
     loadWebglRenderer()
     requestAnimationFrame(() => {
       fitTerminal()
@@ -219,7 +227,7 @@ onMounted(() => {
   // Receive PTY output — write raw bytes to xterm.js
   unsubOutput = socket.onOutput((data: Uint8Array) => {
     if (terminal) {
-      terminal.write(data)
+      terminal.write(glyphs.filter(data))
     }
   })
 
@@ -227,6 +235,7 @@ onMounted(() => {
   // whole screen, so start from a clean terminal rather than draw over the
   // stale one.
   unsubReconnect = socket.onReconnect(() => {
+    glyphs.reset()
     terminal?.reset()
   })
 
@@ -252,12 +261,21 @@ watch(
         requestAnimationFrame(() => {
           if (props.sessionName !== newSession) return
           if (terminal && oldSession) {
+            glyphs.reset()
             terminal.clear()
             terminal.reset()
           }
           const size = fitTerminal()
           if (size) lastSentSize = size
           socket.selectSession(newSession, size ?? undefined)
+          // Type straight into the new session without clicking it first.
+          // Take focus on desktop, or from the proxy that held it through the
+          // tap on iPadOS; don't steal it from anything else (e.g. a rename
+          // field in the sidebar).
+          const active = document.activeElement
+          if (!active || active === document.body || focusIsHeldForTerminal()) {
+            terminal?.focus()
+          }
         })
       })
     }
@@ -313,7 +331,7 @@ onBeforeUnmount(() => {
     <div ref="terminalRef" class="terminal-element" @contextmenu="onContextMenu" />
 
     <!-- Mobile key bar: Tab, Esc, arrows, sticky Ctrl/Alt, special chars -->
-    <MobileKeyBar v-if="isMobile" />
+    <MobileKeyBar v-if="showKeyBar" />
 
     <TerminalContextMenu
       :visible="ctxVisible"
