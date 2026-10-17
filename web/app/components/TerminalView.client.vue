@@ -224,6 +224,10 @@ onMounted(() => {
       brightWhite: '#f0f6fc',
     },
     allowProposedApi: true,
+    // With tmux mouse mode on, drags go to tmux. On macOS and iPadOS, xterm
+    // only makes its own selection (copied with Cmd+C) when Option is held
+    // and this is set; elsewhere Shift-drag already does.
+    macOptionClickForcesSelection: true,
   })
 
   fitAddon = new FitAddon()
