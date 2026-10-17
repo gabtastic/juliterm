@@ -209,7 +209,7 @@ function loadWebglRenderer() {
 // Touch gestures. Browsers don't turn a finger swipe into wheel input, and
 // xterm has no touch handling, so with tmux mouse mode on a swipe did nothing
 // (xterm's own scrollback is empty inside tmux). Vertical swipes become
-// synthetic wheel events, one per cell height of movement: xterm reports them
+// synthetic wheel events, one per few cells of movement: xterm reports them
 // to tmux as mouse-wheel input, or scrolls its own buffer when no app has
 // mouse mode on. Taps are left alone so they still focus the terminal.
 //
@@ -218,6 +218,10 @@ function loadWebglRenderer() {
 // touchend is a user gesture, so Safari allows the clipboard write. Select
 // mode turns itself off after a copy, so the next swipe scrolls again.
 const TAP_SLOP_PX = 8
+// Finger travel, in cells, per wheel step. Line-mode events give exactly one
+// wheel report each (xterm damps small pixel deltas to 0.3 lines), and tmux
+// scrolls 5 lines per report, so this keeps the content near the finger.
+const CELLS_PER_WHEEL_STEP = 3
 
 interface TouchState {
   startY: number
@@ -238,13 +242,13 @@ function screenBox(): ScreenBox | null {
 
 // Dispatch where a real wheel event would land, so it reaches whichever
 // xterm element listens (mouse reporting or the scrollable viewport).
-function sendWheel(deltaY: number, clientX: number, clientY: number) {
+function sendWheel(lines: number, clientX: number, clientY: number) {
   const root = terminal?.element
   if (!root) return
   const hit = document.elementFromPoint(clientX, clientY)
   const target = hit && root.contains(hit) ? hit : (root.querySelector('.xterm-screen') ?? root)
   target.dispatchEvent(new WheelEvent('wheel', {
-    deltaY, deltaMode: 0, clientX, clientY, bubbles: true, cancelable: true,
+    deltaY: lines, deltaMode: WheelEvent.DOM_DELTA_LINE, clientX, clientY, bubbles: true, cancelable: true,
   }))
 }
 
@@ -285,14 +289,14 @@ function onTouchMove(e: TouchEvent) {
   e.preventDefault() // no page rubber-banding while scrolling the terminal
   const box = screenBox()
   if (!box) return
-  const cellH = box.height / terminal.rows
+  const step = (box.height / terminal.rows) * CELLS_PER_WHEEL_STEP
   touch.accum += t.clientY - touch.lastY
   touch.lastY = t.clientY
   // Finger down drags the content down: scroll back (negative wheel delta).
-  while (Math.abs(touch.accum) >= cellH) {
+  while (Math.abs(touch.accum) >= step) {
     const back = touch.accum > 0
-    touch.accum += back ? -cellH : cellH
-    sendWheel(back ? -cellH : cellH, t.clientX, t.clientY)
+    touch.accum += back ? -step : step
+    sendWheel(back ? -1 : 1, t.clientX, t.clientY)
   }
 }
 
