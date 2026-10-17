@@ -12,6 +12,8 @@ import { useViewportMode } from '~/composables/useViewportMode'
 import { ctrlActive, altActive, controlByte } from '~/composables/useMobileKeyModifiers'
 import { createGlyphSubstitution } from '~/utils/glyphSubstitution'
 import { focusIsHeldForTerminal, markAsTerminalInput } from '~/utils/focusHandoff'
+import { parseOsc52 } from '~/utils/osc52'
+import { copyText } from '~/utils/clipboard'
 
 const props = defineProps<{
   sessionName: string | null
@@ -74,6 +76,52 @@ async function onCtxAction(action: string) {
     const message = e instanceof Error ? e.message : 'Operation failed'
     emit('error', message)
   }
+}
+
+// Clipboard notice in the corner of the terminal: a short confirmation, or a
+// copy waiting for a tap when the browser refused to write it directly.
+interface ClipNotice {
+  message: string
+  pending: string | null
+}
+const clipNotice = ref<ClipNotice | null>(null)
+let clipNoticeTimer: ReturnType<typeof setTimeout> | null = null
+
+function showClipNotice(message: string, pending: string | null = null, ms = 1500) {
+  if (clipNoticeTimer) clearTimeout(clipNoticeTimer)
+  clipNotice.value = { message, pending }
+  clipNoticeTimer = setTimeout(() => {
+    clipNotice.value = null
+    clipNoticeTimer = null
+  }, ms)
+}
+
+function dismissClipNotice() {
+  if (clipNoticeTimer) clearTimeout(clipNoticeTimer)
+  clipNoticeTimer = null
+  clipNotice.value = null
+}
+
+// An app copied text (tmux copy mode, Claude Code's selection) via OSC 52.
+// Write it straight away where the browser allows; Safari and every iPadOS
+// browser refuse outside a user gesture, so offer a tap that copies it.
+async function copyFromApp(text: string) {
+  if (await copyText(text)) {
+    showClipNotice('Copied')
+    return
+  }
+  showClipNotice(`Copied ${text.length} characters — tap to copy to clipboard`, text, 10000)
+}
+
+// Runs inside the tap on the notice, which Safari accepts as a user gesture.
+async function copyPending() {
+  const text = clipNotice.value?.pending
+  if (!text) return
+  showClipNotice(await copyText(text) ? 'Copied' : 'Copy failed')
+}
+
+function dismissClipNoticeOnEscape(e: KeyboardEvent) {
+  if (e.key === 'Escape' && clipNotice.value?.pending) dismissClipNotice()
 }
 
 let terminal: Terminal | null = null
@@ -181,6 +229,15 @@ onMounted(() => {
   fitAddon = new FitAddon()
   terminal.loadAddon(fitAddon)
   terminal.loadAddon(new WebLinksAddon())
+
+  // OSC 52 clipboard writes from apps. Queries (`?`) are ignored, never
+  // answered, so nothing in the session can read the user's clipboard.
+  terminal.parser.registerOscHandler(52, (data) => {
+    const text = parseOsc52(data)
+    if (text !== null) void copyFromApp(text)
+    return true
+  })
+  window.addEventListener('keydown', dismissClipNoticeOnEscape, true)
 
   if (terminalRef.value) {
     terminal.open(terminalRef.value)
@@ -290,6 +347,8 @@ onBeforeUnmount(() => {
   unsubReconnect = null
   socket.clearSession()
   terminalRef.value?.removeEventListener('mousedown', stopRightClickPropagation, true)
+  window.removeEventListener('keydown', dismissClipNoticeOnEscape, true)
+  dismissClipNotice()
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
@@ -329,6 +388,30 @@ onBeforeUnmount(() => {
 
     <!-- Terminal -->
     <div ref="terminalRef" class="terminal-element" @contextmenu="onContextMenu" />
+
+    <!-- Clipboard notice; pointerdown.prevent keeps focus in the terminal -->
+    <div v-if="clipNotice" class="clip-notice" role="status">
+      <button
+        v-if="clipNotice.pending"
+        class="clip-notice-action"
+        type="button"
+        @pointerdown.prevent
+        @click="copyPending"
+      >
+        {{ clipNotice.message }}
+      </button>
+      <span v-else>{{ clipNotice.message }}</span>
+      <button
+        v-if="clipNotice.pending"
+        class="clip-notice-close"
+        type="button"
+        aria-label="Dismiss"
+        @pointerdown.prevent
+        @click="dismissClipNotice"
+      >
+        &times;
+      </button>
+    </div>
 
     <!-- Mobile key bar: Tab, Esc, arrows, sticky Ctrl/Alt, special chars -->
     <MobileKeyBar v-if="showKeyBar" />
@@ -370,6 +453,45 @@ onBeforeUnmount(() => {
 }
 .terminal-element :deep(.xterm-viewport) {
   overflow-y: auto;
+}
+
+.clip-notice {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 28px);
+  padding: 6px 10px;
+  background: #1c2129;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+  color: #c9d1d9;
+}
+
+.clip-notice-action {
+  background: #1f6feb;
+  border: 1px solid #388bfd;
+  border-radius: 4px;
+  color: #ffffff;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.clip-notice-close {
+  background: none;
+  border: none;
+  color: #8b949e;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
 }
 
 .status-banner {
