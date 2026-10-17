@@ -3,12 +3,13 @@ import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
+import { WebglAddon } from '@xterm/addon-webgl'
 import '@xterm/xterm/css/xterm.css'
 
-import { useTerminalSocket } from '~/composables/useTerminalSocket'
+import { useTerminalSocket, type TerminalSize } from '~/composables/useTerminalSocket'
 import { useSessionApi } from '~/composables/useSessionApi'
 import { useViewportMode } from '~/composables/useViewportMode'
-import { ctrlActive, altActive } from '~/composables/useMobileKeyModifiers'
+import { ctrlActive, altActive, controlByte } from '~/composables/useMobileKeyModifiers'
 
 const props = defineProps<{
   sessionName: string | null
@@ -70,8 +71,71 @@ async function onCtxAction(action: string) {
 
 let terminal: Terminal | null = null
 let fitAddon: FitAddon | null = null
+let webglAddon: WebglAddon | null = null
 let resizeObserver: ResizeObserver | null = null
 let unsubOutput: (() => void) | null = null
+let unsubReconnect: (() => void) | null = null
+
+// Container resizes (window, sidebar drag, mobile keyboard) fire many times a
+// second; wait for them to settle, and only tell the server when the cell
+// size actually changed. Every resize reflows the shared tmux window.
+const RESIZE_DEBOUNCE_MS = 75
+let resizeTimer: ReturnType<typeof setTimeout> | null = null
+let lastSentSize: TerminalSize | null = null
+
+// Fit the terminal to its container and return the resulting size, or null
+// when the container is collapsed (hidden, mid-transition): fitting then
+// would squash the terminal, and sending that size would shrink the shared
+// tmux window for every client.
+function fitTerminal(): TerminalSize | null {
+  if (!terminal || !fitAddon || !terminalRef.value) return null
+  if (terminalRef.value.clientWidth === 0) return null
+  const dims = fitAddon.proposeDimensions()
+  if (!dims || dims.cols < 10) return null
+  fitAddon.fit()
+  return { cols: terminal.cols, rows: terminal.rows }
+}
+
+function syncSize() {
+  const size = fitTerminal()
+  if (!size) return
+  if (lastSentSize && lastSentSize.cols === size.cols && lastSentSize.rows === size.rows) return
+  lastSentSize = size
+  socket.sendResize(size.cols, size.rows)
+}
+
+function scheduleSyncSize() {
+  if (resizeTimer) clearTimeout(resizeTimer)
+  resizeTimer = setTimeout(() => {
+    resizeTimer = null
+    syncSize()
+  }, RESIZE_DEBOUNCE_MS)
+}
+
+// Draw with WebGL: the default DOM renderer struggles with heavy output and
+// full-screen repaints. Browsers without WebGL2 (some mobile or remote
+// browsers) keep the DOM renderer, and so does a lost GPU context.
+// The WebGL renderer is opt-in with `?renderer=webgl`: in testing it stopped
+// repainting after resizes and session switches while output kept arriving,
+// whereas xterm's default DOM renderer stayed reliable.
+function webglRequested() {
+  return new URLSearchParams(window.location.search).get('renderer') === 'webgl'
+}
+
+function loadWebglRenderer() {
+  if (!terminal || !webglRequested()) return
+  try {
+    const addon = new WebglAddon()
+    addon.onContextLoss(() => {
+      addon.dispose()
+      if (webglAddon === addon) webglAddon = null
+    })
+    terminal.loadAddon(addon)
+    webglAddon = addon
+  } catch {
+    webglAddon = null
+  }
+}
 
 function stopRightClickPropagation(e: MouseEvent) {
   if (e.button === 2) e.stopPropagation()
@@ -113,9 +177,12 @@ onMounted(() => {
 
   if (terminalRef.value) {
     terminal.open(terminalRef.value)
+    loadWebglRenderer()
     requestAnimationFrame(() => {
-      fitAddon?.fit()
+      fitTerminal()
     })
+    // Cell metrics depend on the font; measure again once fonts are loaded.
+    document.fonts?.ready.then(() => scheduleSyncSize())
 
     // Intercept right-click before xterm.js can forward it to tmux as mouse button-3.
     // Without this, tmux's native menu appears underneath our HTML context menu.
@@ -127,10 +194,9 @@ onMounted(() => {
   terminal.onData((data: string) => {
     if (ctrlActive.value && data.length === 1) {
       ctrlActive.value = false
-      const code = data.charCodeAt(0)
-      // Map printable/uppercase to control code (e.g. 'c' → ^C = 0x03)
-      const ctrl = code >= 64 ? code & 0x1f : code
-      socket.sendInput(new Uint8Array([ctrl]))
+      // e.g. 'c' → ^C (0x03); characters without a control code go as typed.
+      const ctrl = controlByte(data)
+      socket.sendInput(ctrl === null ? new TextEncoder().encode(data) : new Uint8Array([ctrl]))
       return
     }
     if (altActive.value && data.length === 1) {
@@ -157,14 +223,16 @@ onMounted(() => {
     }
   })
 
+  // The session is attached again (after a reconnect): tmux repaints the
+  // whole screen, so start from a clean terminal rather than draw over the
+  // stale one.
+  unsubReconnect = socket.onReconnect(() => {
+    terminal?.reset()
+  })
+
   // Resize observer — fit terminal to container, then tell server
   resizeObserver = new ResizeObserver(() => {
-    requestAnimationFrame(() => {
-      if (fitAddon && terminal) {
-        fitAddon.fit()
-        socket.sendResize(terminal.cols, terminal.rows)
-      }
-    })
+    scheduleSyncSize()
   })
   if (terminalRef.value) {
     resizeObserver.observe(terminalRef.value)
@@ -175,20 +243,21 @@ onMounted(() => {
 watch(
   () => props.sessionName,
   (newSession, oldSession) => {
-    if (terminal && oldSession) {
-      terminal.clear()
-      terminal.reset()
-    }
-
     if (newSession) {
-      socket.selectSession(newSession)
-      // Send resize after selecting so the PTY gets correct dimensions
+      // Select once laid out, with the fitted size, so the server attaches
+      // at the right size instead of 80x24 and resizing a moment later.
+      // Reset in the same frame, so output still arriving from the old
+      // session isn't drawn after the reset.
       nextTick(() => {
         requestAnimationFrame(() => {
-          if (fitAddon && terminal) {
-            fitAddon.fit()
-            socket.sendResize(terminal.cols, terminal.rows)
+          if (props.sessionName !== newSession) return
+          if (terminal && oldSession) {
+            terminal.clear()
+            terminal.reset()
           }
+          const size = fitTerminal()
+          if (size) lastSentSize = size
+          socket.selectSession(newSession, size ?? undefined)
         })
       })
     }
@@ -199,11 +268,20 @@ watch(
 onBeforeUnmount(() => {
   unsubOutput?.()
   unsubOutput = null
+  unsubReconnect?.()
+  unsubReconnect = null
+  socket.clearSession()
   terminalRef.value?.removeEventListener('mousedown', stopRightClickPropagation, true)
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
   }
+  if (resizeTimer) {
+    clearTimeout(resizeTimer)
+    resizeTimer = null
+  }
+  webglAddon?.dispose()
+  webglAddon = null
   if (terminal) {
     terminal.dispose()
     terminal = null
@@ -260,6 +338,11 @@ onBeforeUnmount(() => {
 
 .terminal-element {
   flex: 1;
+  /* A flex item can't shrink below its content by default, so without these
+     the terminal never gets shorter: xterm's rows hold the element open, the
+     ResizeObserver sees no change, and tmux keeps the old row count. */
+  min-height: 0;
+  overflow: hidden;
   padding: 4px;
 }
 
