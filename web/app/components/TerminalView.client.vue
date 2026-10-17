@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, watch, onMounted, onBeforeUnmount } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount } from 'vue'
 import { Terminal } from '@xterm/xterm'
 import { FitAddon } from '@xterm/addon-fit'
 import { WebLinksAddon } from '@xterm/addon-web-links'
@@ -27,6 +27,10 @@ const glyphs = createGlyphSubstitution()
 const sessionTree = useSessionTree()
 const api = useSessionApi()
 const { isMobile } = useViewportMode(1024)
+// Touch devices get the key bar at any width: an iPad in landscape is wider
+// than 1024px, and its hardware keyboards often have no Esc key.
+const hasTouchScreen = typeof window !== 'undefined' && window.matchMedia('(any-pointer: coarse)').matches
+const showKeyBar = computed(() => isMobile.value || hasTouchScreen)
 
 // Context menu state
 const ctxVisible = ref(false)
@@ -327,7 +331,7 @@ onBeforeUnmount(() => {
     <div ref="terminalRef" class="terminal-element" @contextmenu="onContextMenu" />
 
     <!-- Mobile key bar: Tab, Esc, arrows, sticky Ctrl/Alt, special chars -->
-    <MobileKeyBar v-if="isMobile" />
+    <MobileKeyBar v-if="showKeyBar" />
 
     <TerminalContextMenu
       :visible="ctxVisible"
