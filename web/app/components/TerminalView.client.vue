@@ -12,6 +12,10 @@ import { useViewportMode } from '~/composables/useViewportMode'
 import { ctrlActive, altActive, controlByte } from '~/composables/useMobileKeyModifiers'
 import { createGlyphSubstitution } from '~/utils/glyphSubstitution'
 import { focusIsHeldForTerminal, markAsTerminalInput } from '~/utils/focusHandoff'
+import { parseOsc52 } from '~/utils/osc52'
+import { copyText, readText } from '~/utils/clipboard'
+import { cellAt, linearSelection, type Cell, type ScreenBox } from '~/utils/touchCells'
+import { selectMode, setPasteHandler } from '~/composables/useTerminalTouch'
 
 const props = defineProps<{
   sessionName: string | null
@@ -74,6 +78,64 @@ async function onCtxAction(action: string) {
     const message = e instanceof Error ? e.message : 'Operation failed'
     emit('error', message)
   }
+}
+
+// Clipboard notice in the corner of the terminal: a short confirmation, or a
+// copy waiting for a tap when the browser refused to write it directly.
+interface ClipNotice {
+  message: string
+  pending: string | null
+}
+const clipNotice = ref<ClipNotice | null>(null)
+let clipNoticeTimer: ReturnType<typeof setTimeout> | null = null
+
+function showClipNotice(message: string, pending: string | null = null, ms = 1500) {
+  if (clipNoticeTimer) clearTimeout(clipNoticeTimer)
+  clipNotice.value = { message, pending }
+  clipNoticeTimer = setTimeout(() => {
+    clipNotice.value = null
+    clipNoticeTimer = null
+  }, ms)
+}
+
+function dismissClipNotice() {
+  if (clipNoticeTimer) clearTimeout(clipNoticeTimer)
+  clipNoticeTimer = null
+  clipNotice.value = null
+}
+
+// An app copied text (tmux copy mode, Claude Code's selection) via OSC 52.
+// Write it straight away where the browser allows; Safari and every iPadOS
+// browser refuse outside a user gesture, so offer a tap that copies it.
+async function copyFromApp(text: string) {
+  if (await copyText(text)) {
+    showClipNotice('Copied')
+    return
+  }
+  showClipNotice(`Copied ${text.length} characters — tap to copy to clipboard`, text, 10000)
+}
+
+// Runs inside the tap on the notice, which Safari accepts as a user gesture.
+async function copyPending() {
+  const text = clipNotice.value?.pending
+  if (!text) return
+  showClipNotice(await copyText(text) ? 'Copied' : 'Copy failed')
+}
+
+// The key bar's Paste key. terminal.paste() goes through xterm's paste path,
+// which adds bracketed-paste markers when the app asked for them.
+async function pasteFromClipboard() {
+  const text = await readText()
+  if (text === null) {
+    showClipNotice('Paste failed: clipboard not available', null, 2500)
+    return
+  }
+  if (text) terminal?.paste(text)
+  terminal?.focus()
+}
+
+function dismissClipNoticeOnEscape(e: KeyboardEvent) {
+  if (e.key === 'Escape' && clipNotice.value?.pending) dismissClipNotice()
 }
 
 let terminal: Terminal | null = null
@@ -144,6 +206,113 @@ function loadWebglRenderer() {
   }
 }
 
+// Touch gestures. Browsers don't turn a finger swipe into wheel input, and
+// xterm has no touch handling, so with tmux mouse mode on a swipe did nothing
+// (xterm's own scrollback is empty inside tmux). Vertical swipes become
+// synthetic wheel events, one per few cells of movement: xterm reports them
+// to tmux as mouse-wheel input, or scrolls its own buffer when no app has
+// mouse mode on. Taps are left alone so they still focus the terminal.
+//
+// In Select mode (the key bar's Select key) a drag instead makes xterm's own
+// selection over the visible screen and lifting the finger copies it; the
+// touchend is a user gesture, so Safari allows the clipboard write. Select
+// mode turns itself off after a copy, so the next swipe scrolls again.
+const TAP_SLOP_PX = 8
+// Finger travel, in cells, per wheel step. Line-mode events give exactly one
+// wheel report each (xterm damps small pixel deltas to 0.3 lines), and tmux
+// scrolls 5 lines per report, so this keeps the content near the finger.
+const CELLS_PER_WHEEL_STEP = 3
+
+interface TouchState {
+  startY: number
+  lastY: number
+  accum: number
+  scrolling: boolean
+  anchor: Cell | null
+}
+let touch: TouchState | null = null
+
+function screenBox(): ScreenBox | null {
+  const el = terminal?.element?.querySelector('.xterm-screen')
+  if (!el) return null
+  const r = el.getBoundingClientRect()
+  if (r.width === 0 || r.height === 0) return null
+  return { left: r.left, top: r.top, width: r.width, height: r.height }
+}
+
+// Dispatch where a real wheel event would land, so it reaches whichever
+// xterm element listens (mouse reporting or the scrollable viewport).
+function sendWheel(lines: number, clientX: number, clientY: number) {
+  const root = terminal?.element
+  if (!root) return
+  const hit = document.elementFromPoint(clientX, clientY)
+  const target = hit && root.contains(hit) ? hit : (root.querySelector('.xterm-screen') ?? root)
+  target.dispatchEvent(new WheelEvent('wheel', {
+    deltaY: lines, deltaMode: WheelEvent.DOM_DELTA_LINE, clientX, clientY, bubbles: true, cancelable: true,
+  }))
+}
+
+function onTouchStart(e: TouchEvent) {
+  if (!terminal || e.touches.length !== 1) {
+    touch = null
+    return
+  }
+  const t = e.touches[0]!
+  touch = { startY: t.clientY, lastY: t.clientY, accum: 0, scrolling: false, anchor: null }
+  if (selectMode.value) {
+    const box = screenBox()
+    if (!box) return
+    touch.anchor = cellAt(t.clientX, t.clientY, box, terminal.cols, terminal.rows)
+    terminal.clearSelection()
+  }
+}
+
+function selectTo(x: number, y: number) {
+  if (!terminal || !touch?.anchor) return
+  const box = screenBox()
+  if (!box) return
+  const current = cellAt(x, y, box, terminal.cols, terminal.rows)
+  const sel = linearSelection(touch.anchor, current, terminal.cols)
+  terminal.select(sel.col, sel.row + terminal.buffer.active.viewportY, sel.length)
+}
+
+function onTouchMove(e: TouchEvent) {
+  if (!touch || !terminal || e.touches.length !== 1) return
+  const t = e.touches[0]!
+  if (touch.anchor) {
+    e.preventDefault()
+    selectTo(t.clientX, t.clientY)
+    return
+  }
+  if (!touch.scrolling && Math.abs(t.clientY - touch.startY) < TAP_SLOP_PX) return
+  touch.scrolling = true
+  e.preventDefault() // no page rubber-banding while scrolling the terminal
+  const box = screenBox()
+  if (!box) return
+  const step = (box.height / terminal.rows) * CELLS_PER_WHEEL_STEP
+  touch.accum += t.clientY - touch.lastY
+  touch.lastY = t.clientY
+  // Finger down drags the content down: scroll back (negative wheel delta).
+  while (Math.abs(touch.accum) >= step) {
+    const back = touch.accum > 0
+    touch.accum += back ? -step : step
+    sendWheel(back ? -1 : 1, t.clientX, t.clientY)
+  }
+}
+
+function onTouchEnd() {
+  const selecting = touch?.anchor
+  touch = null
+  if (!selecting || !terminal) return
+  const text = terminal.getSelection()
+  if (!text) return
+  // Called synchronously from touchend, so it counts as a user gesture.
+  void copyText(text).then((ok) => {
+    showClipNotice(ok ? 'Copied' : 'Copy failed')
+    if (ok) selectMode.value = false
+  })
+}
+
 function stopRightClickPropagation(e: MouseEvent) {
   if (e.button === 2) e.stopPropagation()
 }
@@ -176,11 +345,25 @@ onMounted(() => {
       brightWhite: '#f0f6fc',
     },
     allowProposedApi: true,
+    // With tmux mouse mode on, drags go to tmux. On macOS and iPadOS, xterm
+    // only makes its own selection (copied with Cmd+C) when Option is held
+    // and this is set; elsewhere Shift-drag already does.
+    macOptionClickForcesSelection: true,
   })
 
   fitAddon = new FitAddon()
   terminal.loadAddon(fitAddon)
   terminal.loadAddon(new WebLinksAddon())
+
+  // OSC 52 clipboard writes from apps. Queries (`?`) are ignored, never
+  // answered, so nothing in the session can read the user's clipboard.
+  terminal.parser.registerOscHandler(52, (data) => {
+    const text = parseOsc52(data)
+    if (text !== null) void copyFromApp(text)
+    return true
+  })
+  window.addEventListener('keydown', dismissClipNoticeOnEscape, true)
+  setPasteHandler(() => void pasteFromClipboard())
 
   if (terminalRef.value) {
     terminal.open(terminalRef.value)
@@ -195,6 +378,12 @@ onMounted(() => {
     // Intercept right-click before xterm.js can forward it to tmux as mouse button-3.
     // Without this, tmux's native menu appears underneath our HTML context menu.
     terminalRef.value.addEventListener('mousedown', stopRightClickPropagation, true)
+
+    // Capture phase, so these run before xterm's own gesture handling.
+    terminalRef.value.addEventListener('touchstart', onTouchStart, { passive: true, capture: true })
+    terminalRef.value.addEventListener('touchmove', onTouchMove, { passive: false, capture: true })
+    terminalRef.value.addEventListener('touchend', onTouchEnd, { capture: true })
+    terminalRef.value.addEventListener('touchcancel', onTouchEnd, { capture: true })
   }
 
   // Handle user input — send raw bytes directly to PTY.
@@ -290,6 +479,13 @@ onBeforeUnmount(() => {
   unsubReconnect = null
   socket.clearSession()
   terminalRef.value?.removeEventListener('mousedown', stopRightClickPropagation, true)
+  terminalRef.value?.removeEventListener('touchstart', onTouchStart, { capture: true })
+  terminalRef.value?.removeEventListener('touchmove', onTouchMove, { capture: true })
+  terminalRef.value?.removeEventListener('touchend', onTouchEnd, { capture: true })
+  terminalRef.value?.removeEventListener('touchcancel', onTouchEnd, { capture: true })
+  window.removeEventListener('keydown', dismissClipNoticeOnEscape, true)
+  setPasteHandler(null)
+  dismissClipNotice()
   if (resizeObserver) {
     resizeObserver.disconnect()
     resizeObserver = null
@@ -330,6 +526,30 @@ onBeforeUnmount(() => {
     <!-- Terminal -->
     <div ref="terminalRef" class="terminal-element" @contextmenu="onContextMenu" />
 
+    <!-- Clipboard notice; pointerdown.prevent keeps focus in the terminal -->
+    <div v-if="clipNotice" class="clip-notice" role="status">
+      <button
+        v-if="clipNotice.pending"
+        class="clip-notice-action"
+        type="button"
+        @pointerdown.prevent
+        @click="copyPending"
+      >
+        {{ clipNotice.message }}
+      </button>
+      <span v-else>{{ clipNotice.message }}</span>
+      <button
+        v-if="clipNotice.pending"
+        class="clip-notice-close"
+        type="button"
+        aria-label="Dismiss"
+        @pointerdown.prevent
+        @click="dismissClipNotice"
+      >
+        &times;
+      </button>
+    </div>
+
     <!-- Mobile key bar: Tab, Esc, arrows, sticky Ctrl/Alt, special chars -->
     <MobileKeyBar v-if="showKeyBar" />
 
@@ -362,6 +582,10 @@ onBeforeUnmount(() => {
   min-height: 0;
   overflow: hidden;
   padding: 4px;
+  /* juli handles finger gestures here (swipe to scroll, Select-mode drags).
+     Without this, iPadOS claims the swipe for native scrolling of xterm's
+     viewport and cancels the touch before juli sees it moving. */
+  touch-action: none;
 }
 
 /* Ensure xterm fills the container */
@@ -370,6 +594,45 @@ onBeforeUnmount(() => {
 }
 .terminal-element :deep(.xterm-viewport) {
   overflow-y: auto;
+}
+
+.clip-notice {
+  position: absolute;
+  top: 10px;
+  right: 14px;
+  z-index: 200;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  max-width: calc(100% - 28px);
+  padding: 6px 10px;
+  background: #1c2129;
+  border: 1px solid #30363d;
+  border-radius: 6px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.4);
+  font-size: 12px;
+  color: #c9d1d9;
+}
+
+.clip-notice-action {
+  background: #1f6feb;
+  border: 1px solid #388bfd;
+  border-radius: 4px;
+  color: #ffffff;
+  font-size: 12px;
+  padding: 4px 8px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.clip-notice-close {
+  background: none;
+  border: none;
+  color: #8b949e;
+  font-size: 16px;
+  line-height: 1;
+  padding: 0 2px;
+  cursor: pointer;
 }
 
 .status-banner {

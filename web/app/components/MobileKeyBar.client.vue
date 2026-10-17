@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { useTerminalSocket } from '~/composables/useTerminalSocket'
 import { ctrlActive, altActive } from '~/composables/useMobileKeyModifiers'
+import { selectMode, requestPaste } from '~/composables/useTerminalTouch'
 
 const socket = useTerminalSocket()
 
@@ -22,15 +23,24 @@ function toggleAlt() {
   ctrlActive.value = false
 }
 
+function toggleSelect() {
+  selectMode.value = !selectMode.value
+}
+
 type Key = {
   label: string
   action: () => void
   wide?: boolean
   icon?: boolean
+  // Run on click instead of pointerdown: on touch screens only pointerup /
+  // click count as a user gesture, which clipboard access needs.
+  onClick?: boolean
 }
 
 const keys: Key[] = [
   { label: 'Esc',  action: () => send(new Uint8Array([0x1b])) },
+  { label: 'Select', action: toggleSelect, wide: true },
+  { label: 'Paste', action: requestPaste, wide: true, onClick: true },
   { label: 'Tab',  action: () => send(new Uint8Array([0x09])) },
   { label: 'Ctrl', action: toggleCtrl },
   { label: 'Alt',  action: toggleAlt },
@@ -59,10 +69,12 @@ const keys: Key[] = [
       class="key"
       :class="{
         'key--wide': key.wide,
-        'key--active': (key.label === 'Ctrl' && ctrlActive) || (key.label === 'Alt' && altActive),
-        'key--modifier': key.label === 'Ctrl' || key.label === 'Alt',
+        'key--active': (key.label === 'Ctrl' && ctrlActive) || (key.label === 'Alt' && altActive) || (key.label === 'Select' && selectMode),
+        'key--modifier': key.label === 'Ctrl' || key.label === 'Alt' || key.label === 'Select',
       }"
-      @pointerdown.prevent="key.action()"
+      :aria-pressed="key.label === 'Select' ? selectMode : undefined"
+      @pointerdown.prevent="!key.onClick && key.action()"
+      @click="key.onClick && key.action()"
     >
       {{ key.label }}
     </button>
