@@ -5,14 +5,17 @@ import { ref } from 'vue'
 /** While on, a one-finger drag selects text instead of scrolling. */
 export const selectMode = ref(false)
 
-// TerminalView registers how to paste into the terminal (xterm's paste path,
-// which wraps the text in bracketed-paste markers when the app asked for it).
-let pasteTarget: ((text: string) => void) | null = null
+// TerminalView registers how to paste from the clipboard into the terminal.
+let pasteHandler: (() => void) | null = null
 
-export function setPasteTarget(fn: ((text: string) => void) | null) {
-  pasteTarget = fn
+export function setPasteHandler(fn: (() => void) | null) {
+  pasteHandler = fn
 }
 
-export function pasteIntoTerminal(text: string) {
-  pasteTarget?.(text)
+/**
+ * Paste the clipboard into the terminal. Call it synchronously from a click:
+ * Safari only lets a page read the clipboard inside a user gesture.
+ */
+export function requestPaste() {
+  pasteHandler?.()
 }

@@ -13,9 +13,9 @@ import { ctrlActive, altActive, controlByte } from '~/composables/useMobileKeyMo
 import { createGlyphSubstitution } from '~/utils/glyphSubstitution'
 import { focusIsHeldForTerminal, markAsTerminalInput } from '~/utils/focusHandoff'
 import { parseOsc52 } from '~/utils/osc52'
-import { copyText } from '~/utils/clipboard'
+import { copyText, readText } from '~/utils/clipboard'
 import { cellAt, linearSelection, type Cell, type ScreenBox } from '~/utils/touchCells'
-import { selectMode } from '~/composables/useTerminalTouch'
+import { selectMode, setPasteHandler } from '~/composables/useTerminalTouch'
 
 const props = defineProps<{
   sessionName: string | null
@@ -120,6 +120,18 @@ async function copyPending() {
   const text = clipNotice.value?.pending
   if (!text) return
   showClipNotice(await copyText(text) ? 'Copied' : 'Copy failed')
+}
+
+// The key bar's Paste key. terminal.paste() goes through xterm's paste path,
+// which adds bracketed-paste markers when the app asked for them.
+async function pasteFromClipboard() {
+  const text = await readText()
+  if (text === null) {
+    showClipNotice('Paste failed: clipboard not available', null, 2500)
+    return
+  }
+  if (text) terminal?.paste(text)
+  terminal?.focus()
 }
 
 function dismissClipNoticeOnEscape(e: KeyboardEvent) {
@@ -347,6 +359,7 @@ onMounted(() => {
     return true
   })
   window.addEventListener('keydown', dismissClipNoticeOnEscape, true)
+  setPasteHandler(() => void pasteFromClipboard())
 
   if (terminalRef.value) {
     terminal.open(terminalRef.value)
@@ -466,6 +479,7 @@ onBeforeUnmount(() => {
   terminalRef.value?.removeEventListener('touchend', onTouchEnd)
   terminalRef.value?.removeEventListener('touchcancel', onTouchEnd)
   window.removeEventListener('keydown', dismissClipNoticeOnEscape, true)
+  setPasteHandler(null)
   dismissClipNotice()
   if (resizeObserver) {
     resizeObserver.disconnect()

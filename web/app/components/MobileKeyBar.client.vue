@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { useTerminalSocket } from '~/composables/useTerminalSocket'
 import { ctrlActive, altActive } from '~/composables/useMobileKeyModifiers'
-import { selectMode } from '~/composables/useTerminalTouch'
+import { selectMode, requestPaste } from '~/composables/useTerminalTouch'
 
 const socket = useTerminalSocket()
 
@@ -40,6 +40,7 @@ type Key = {
 const keys: Key[] = [
   { label: 'Esc',  action: () => send(new Uint8Array([0x1b])) },
   { label: 'Select', action: toggleSelect, wide: true },
+  { label: 'Paste', action: requestPaste, wide: true, onClick: true },
   { label: 'Tab',  action: () => send(new Uint8Array([0x09])) },
   { label: 'Ctrl', action: toggleCtrl },
   { label: 'Alt',  action: toggleAlt },
