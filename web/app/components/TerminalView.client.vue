@@ -10,6 +10,7 @@ import { useTerminalSocket, type TerminalSize } from '~/composables/useTerminalS
 import { useSessionApi } from '~/composables/useSessionApi'
 import { useViewportMode } from '~/composables/useViewportMode'
 import { ctrlActive, altActive, controlByte } from '~/composables/useMobileKeyModifiers'
+import { createEmojiPresentation } from '~/utils/emojiPresentation'
 
 const props = defineProps<{
   sessionName: string | null
@@ -21,6 +22,7 @@ const emit = defineEmits<{
 
 const terminalRef = ref<HTMLDivElement | null>(null)
 const socket = useTerminalSocket()
+const emoji = createEmojiPresentation()
 const sessionTree = useSessionTree()
 const api = useSessionApi()
 const { isMobile } = useViewportMode(1024)
@@ -222,7 +224,7 @@ onMounted(() => {
   // Receive PTY output — write raw bytes to xterm.js
   unsubOutput = socket.onOutput((data: Uint8Array) => {
     if (terminal) {
-      terminal.write(data)
+      terminal.write(emoji.filter(data))
     }
   })
 
@@ -230,6 +232,7 @@ onMounted(() => {
   // whole screen, so start from a clean terminal rather than draw over the
   // stale one.
   unsubReconnect = socket.onReconnect(() => {
+    emoji.reset()
     terminal?.reset()
   })
 
@@ -255,6 +258,7 @@ watch(
         requestAnimationFrame(() => {
           if (props.sessionName !== newSession) return
           if (terminal && oldSession) {
+            emoji.reset()
             terminal.clear()
             terminal.reset()
           }
