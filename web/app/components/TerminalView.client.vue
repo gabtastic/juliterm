@@ -11,7 +11,7 @@ import { useSessionApi } from '~/composables/useSessionApi'
 import { useViewportMode } from '~/composables/useViewportMode'
 import { ctrlActive, altActive, controlByte } from '~/composables/useMobileKeyModifiers'
 import { createGlyphSubstitution } from '~/utils/glyphSubstitution'
-import { focusIsHeldForTerminal } from '~/utils/focusHandoff'
+import { focusIsHeldForTerminal, markAsTerminalInput } from '~/utils/focusHandoff'
 
 const props = defineProps<{
   sessionName: string | null
@@ -180,6 +180,7 @@ onMounted(() => {
 
   if (terminalRef.value) {
     terminal.open(terminalRef.value)
+    if (terminal.textarea) markAsTerminalInput(terminal.textarea)
     loadWebglRenderer()
     requestAnimationFrame(() => {
       fitTerminal()
