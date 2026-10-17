@@ -11,6 +11,7 @@ import { useSessionApi } from '~/composables/useSessionApi'
 import { useViewportMode } from '~/composables/useViewportMode'
 import { ctrlActive, altActive, controlByte } from '~/composables/useMobileKeyModifiers'
 import { createEmojiPresentation } from '~/utils/emojiPresentation'
+import { focusIsHeldForTerminal } from '~/utils/focusHandoff'
 
 const props = defineProps<{
   sessionName: string | null
@@ -265,6 +266,14 @@ watch(
           const size = fitTerminal()
           if (size) lastSentSize = size
           socket.selectSession(newSession, size ?? undefined)
+          // Type straight into the new session without clicking it first.
+          // Take focus on desktop, or from the proxy that held it through the
+          // tap on iPadOS; don't steal it from anything else (e.g. a rename
+          // field in the sidebar).
+          const active = document.activeElement
+          if (!active || active === document.body || focusIsHeldForTerminal()) {
+            terminal?.focus()
+          }
         })
       })
     }
