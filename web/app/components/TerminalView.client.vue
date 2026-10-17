@@ -115,8 +115,15 @@ function scheduleSyncSize() {
 // Draw with WebGL: the default DOM renderer struggles with heavy output and
 // full-screen repaints. Browsers without WebGL2 (some mobile or remote
 // browsers) keep the DOM renderer, and so does a lost GPU context.
+// The WebGL renderer is opt-in with `?renderer=webgl`: in testing it stopped
+// repainting after resizes and session switches while output kept arriving,
+// whereas xterm's default DOM renderer stayed reliable.
+function webglRequested() {
+  return new URLSearchParams(window.location.search).get('renderer') === 'webgl'
+}
+
 function loadWebglRenderer() {
-  if (!terminal) return
+  if (!terminal || !webglRequested()) return
   try {
     const addon = new WebglAddon()
     addon.onContextLoss(() => {
