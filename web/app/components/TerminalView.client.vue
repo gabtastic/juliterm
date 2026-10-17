@@ -14,6 +14,7 @@ import { createGlyphSubstitution } from '~/utils/glyphSubstitution'
 import { focusIsHeldForTerminal, markAsTerminalInput } from '~/utils/focusHandoff'
 import { parseOsc52 } from '~/utils/osc52'
 import { copyText } from '~/utils/clipboard'
+import type { ScreenBox } from '~/utils/touchCells'
 
 const props = defineProps<{
   sessionName: string | null
@@ -192,6 +193,74 @@ function loadWebglRenderer() {
   }
 }
 
+// Touch gestures. Browsers don't turn a finger swipe into wheel input, and
+// xterm has no touch handling, so with tmux mouse mode on a swipe did nothing
+// (xterm's own scrollback is empty inside tmux). Vertical swipes become
+// synthetic wheel events, one per cell height of movement: xterm reports them
+// to tmux as mouse-wheel input, or scrolls its own buffer when no app has
+// mouse mode on. Taps are left alone so they still focus the terminal.
+const TAP_SLOP_PX = 8
+
+interface TouchState {
+  startY: number
+  lastY: number
+  accum: number
+  scrolling: boolean
+}
+let touch: TouchState | null = null
+
+function screenBox(): ScreenBox | null {
+  const el = terminal?.element?.querySelector('.xterm-screen')
+  if (!el) return null
+  const r = el.getBoundingClientRect()
+  if (r.width === 0 || r.height === 0) return null
+  return { left: r.left, top: r.top, width: r.width, height: r.height }
+}
+
+// Dispatch where a real wheel event would land, so it reaches whichever
+// xterm element listens (mouse reporting or the scrollable viewport).
+function sendWheel(deltaY: number, clientX: number, clientY: number) {
+  const root = terminal?.element
+  if (!root) return
+  const hit = document.elementFromPoint(clientX, clientY)
+  const target = hit && root.contains(hit) ? hit : (root.querySelector('.xterm-screen') ?? root)
+  target.dispatchEvent(new WheelEvent('wheel', {
+    deltaY, deltaMode: 0, clientX, clientY, bubbles: true, cancelable: true,
+  }))
+}
+
+function onTouchStart(e: TouchEvent) {
+  if (!terminal || e.touches.length !== 1) {
+    touch = null
+    return
+  }
+  const t = e.touches[0]!
+  touch = { startY: t.clientY, lastY: t.clientY, accum: 0, scrolling: false }
+}
+
+function onTouchMove(e: TouchEvent) {
+  if (!touch || !terminal || e.touches.length !== 1) return
+  const t = e.touches[0]!
+  if (!touch.scrolling && Math.abs(t.clientY - touch.startY) < TAP_SLOP_PX) return
+  touch.scrolling = true
+  e.preventDefault() // no page rubber-banding while scrolling the terminal
+  const box = screenBox()
+  if (!box) return
+  const cellH = box.height / terminal.rows
+  touch.accum += t.clientY - touch.lastY
+  touch.lastY = t.clientY
+  // Finger down drags the content down: scroll back (negative wheel delta).
+  while (Math.abs(touch.accum) >= cellH) {
+    const back = touch.accum > 0
+    touch.accum += back ? -cellH : cellH
+    sendWheel(back ? -cellH : cellH, t.clientX, t.clientY)
+  }
+}
+
+function onTouchEnd() {
+  touch = null
+}
+
 function stopRightClickPropagation(e: MouseEvent) {
   if (e.button === 2) e.stopPropagation()
 }
@@ -256,6 +325,11 @@ onMounted(() => {
     // Intercept right-click before xterm.js can forward it to tmux as mouse button-3.
     // Without this, tmux's native menu appears underneath our HTML context menu.
     terminalRef.value.addEventListener('mousedown', stopRightClickPropagation, true)
+
+    terminalRef.value.addEventListener('touchstart', onTouchStart, { passive: true })
+    terminalRef.value.addEventListener('touchmove', onTouchMove, { passive: false })
+    terminalRef.value.addEventListener('touchend', onTouchEnd)
+    terminalRef.value.addEventListener('touchcancel', onTouchEnd)
   }
 
   // Handle user input — send raw bytes directly to PTY.
@@ -351,6 +425,10 @@ onBeforeUnmount(() => {
   unsubReconnect = null
   socket.clearSession()
   terminalRef.value?.removeEventListener('mousedown', stopRightClickPropagation, true)
+  terminalRef.value?.removeEventListener('touchstart', onTouchStart)
+  terminalRef.value?.removeEventListener('touchmove', onTouchMove)
+  terminalRef.value?.removeEventListener('touchend', onTouchEnd)
+  terminalRef.value?.removeEventListener('touchcancel', onTouchEnd)
   window.removeEventListener('keydown', dismissClipNoticeOnEscape, true)
   dismissClipNotice()
   if (resizeObserver) {
