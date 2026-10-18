@@ -208,6 +208,7 @@ describe('useTerminalSocket liveness', () => {
   afterEach(() => {
     vi.useRealTimers()
     vi.unstubAllGlobals()
+    Object.defineProperty(document, 'visibilityState', { value: 'visible', configurable: true })
   })
 
   it('keeps a connection that receives heartbeats', async () => {
@@ -253,7 +254,41 @@ describe('useTerminalSocket liveness', () => {
     window.dispatchEvent(new Event('online'))
     expect(FakeWebSocket.instances).toHaveLength(attempts + 1)
   })
+
+  it('does not reconnect while the tab is hidden, and does once it is shown', async () => {
+    const socket = await loadSocket()
+    socket.connect()
+    latest().open()
+
+    setVisibility('hidden')
+    latest().drop()
+    vi.advanceTimersByTime(120_000)
+    window.dispatchEvent(new Event('online'))
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    setVisibility('visible')
+    expect(FakeWebSocket.instances).toHaveLength(2)
+  })
+
+  it('does not reconnect a hidden tab after a silent connection is dropped', async () => {
+    const socket = await loadSocket()
+    socket.connect()
+    latest().open()
+
+    setVisibility('hidden')
+    vi.advanceTimersByTime(180_000)
+    expect(socket.connected.value).toBe(false)
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    setVisibility('visible')
+    expect(FakeWebSocket.instances).toHaveLength(2)
+  })
 })
+
+function setVisibility(state: 'hidden' | 'visible') {
+  Object.defineProperty(document, 'visibilityState', { value: state, configurable: true })
+  document.dispatchEvent(new Event('visibilitychange'))
+}
 
 describe('useTerminalSocket auth', () => {
   beforeEach(() => {

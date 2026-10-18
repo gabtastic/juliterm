@@ -209,6 +209,15 @@ function abandonSocket() {
   scheduleReconnect()
 }
 
+// A hidden tab must not reconnect: attaching makes it tmux's newest client,
+// so the shared window would shrink to this device's size while nobody is
+// looking at it. iPadOS wakes background tabs every so often, which used to
+// resize tmux to the iPad's size with no one using juli. Reconnecting waits
+// until the tab is visible again (see onVisibilityChange).
+function pageHidden() {
+  return typeof document !== 'undefined' && document.visibilityState === 'hidden'
+}
+
 function checkLiveness() {
   if (isOpen() && Date.now() - lastMessageAt > STALE_AFTER_MS) {
     abandonSocket()
@@ -219,7 +228,7 @@ function checkLiveness() {
 // and, if it's down, reconnect immediately instead of waiting out a backoff
 // that may have grown to 30s.
 function wake() {
-  if (intentionallyClosed) return
+  if (intentionallyClosed || pageHidden()) return
   checkLiveness()
   reconnectDelay = MIN_RECONNECT_DELAY
   if (!ws) {
@@ -256,6 +265,8 @@ function scheduleReconnect() {
 
   reconnectTimer = setTimeout(() => {
     reconnectTimer = null
+    // Hidden: leave it to wake() when the tab is shown again.
+    if (pageHidden()) return
     reconnectDelay = Math.min(reconnectDelay * 2, 30000)
     connect()
   }, delay)
