@@ -13,6 +13,13 @@ html, body, #__nuxt {
   font-family: 'SF Mono', 'Cascadia Code', 'Fira Code', 'Menlo', monospace;
 }
 
+/* The app fills the visible area itself; the page never scrolls or
+   rubber-bands (iPadOS would otherwise shift it under the keyboard). */
+html, body {
+  overflow: hidden;
+  overscroll-behavior: none;
+}
+
 *, *::before, *::after {
   box-sizing: border-box;
 }
