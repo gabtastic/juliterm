@@ -3,6 +3,8 @@ import { ref, watch, nextTick } from 'vue'
 import type { Session } from '~/composables/useSessionTree'
 import { useTimeAgo } from '~/composables/useTimeAgo'
 import { useSessionApi } from '~/composables/useSessionApi'
+import { useLinkBrowser } from '~/composables/useLinkBrowser'
+import { LINK_BROWSERS, isStandaloneApp, type LinkBrowser } from '~/utils/linkBrowser'
 
 const props = defineProps<{
   sessions: Session[]
@@ -17,6 +19,14 @@ const emit = defineEmits<{
 
 const { tick, formatTimeAgo } = useTimeAgo()
 const api = useSessionApi()
+
+// Only an installed (Home Screen) web app opens links in an in-app browser,
+// so that's the only place the choice is offered.
+const showLinkSetting = isStandaloneApp()
+const { linkBrowser, setLinkBrowser } = useLinkBrowser()
+function onLinkBrowserChange(e: Event) {
+  setLinkBrowser((e.target as HTMLSelectElement).value as LinkBrowser)
+}
 const { logout } = useLogout()
 
 // --- State ---
@@ -331,6 +341,15 @@ function handleCancel() {
       </div>
     </div>
 
+    <div v-if="showLinkSetting" class="tree-footer">
+      <label class="link-setting">
+        Open links in
+        <select :value="linkBrowser" @change="onLinkBrowserChange">
+          <option v-for="b in LINK_BROWSERS" :key="b.value" :value="b.value">{{ b.label }}</option>
+        </select>
+      </label>
+    </div>
+
     <ConfirmDialog
       :visible="confirmVisible"
       :title="confirmTitle"
@@ -353,6 +372,31 @@ function handleCancel() {
   display: flex;
   flex-direction: column;
   user-select: none;
+}
+
+.tree-footer {
+  margin-top: auto;
+  padding: 10px 16px;
+  border-top: 1px solid #21262d;
+}
+
+.link-setting {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 11px;
+  color: #8b949e;
+}
+
+.link-setting select {
+  background: #0d1117;
+  color: #c9d1d9;
+  border: 1px solid #30363d;
+  border-radius: 4px;
+  /* 16px keeps iPadOS from zooming the page when the picker gets focus. */
+  font-size: 16px;
+  padding: 2px 4px;
 }
 
 .tree-header {

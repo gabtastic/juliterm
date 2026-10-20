@@ -92,11 +92,11 @@ const keys: Key[] = [
   border-top: 1px solid #30363d;
   padding: 4px 6px;
   gap: 5px;
+  /* A plain bottom row of the terminal column: the page is sized to the area
+     above the keyboard, so this already sits just above it. (Sticky
+     positioning moved with Safari's page scroll and floated over the
+     terminal.) */
   flex-shrink: 0;
-  /* Stay above on-screen keyboard */
-  position: sticky;
-  bottom: 0;
-  z-index: 100;
 }
 
 .key-bar::-webkit-scrollbar {

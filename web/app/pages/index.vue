@@ -2,6 +2,7 @@
 import { ref, onBeforeUnmount } from 'vue'
 import { useViewportMode } from '~/composables/useViewportMode'
 import { useSidebarLayout } from '~/composables/useSidebarLayout'
+import { useVisibleViewport } from '~/composables/useVisibleViewport'
 import { holdFocusForTerminal } from '~/utils/focusHandoff'
 
 definePageMeta({
@@ -15,6 +16,7 @@ const { isMobile } = useViewportMode()
 const route = useRoute()
 const router = useRouter()
 const sidebar = useSidebarLayout()
+useVisibleViewport()
 const mainAreaRef = ref<HTMLElement | null>(null)
 const resizingSidebar = ref(false)
 const errorMessage = ref<string | null>(null)
@@ -190,7 +192,8 @@ const isConnected = computed(() => {
 <style scoped>
 .layout {
   height: 100vh;
-  height: 100dvh;
+  /* The visible area above the iPadOS keyboard, kept by useVisibleViewport. */
+  height: var(--app-height, 100dvh);
   display: flex;
   flex-direction: column;
   overflow: hidden;
