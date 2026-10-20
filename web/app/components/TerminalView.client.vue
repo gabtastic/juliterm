@@ -11,6 +11,8 @@ import { useSessionApi } from '~/composables/useSessionApi'
 import { useViewportMode } from '~/composables/useViewportMode'
 import { ctrlActive, altActive, controlByte } from '~/composables/useMobileKeyModifiers'
 import { createGlyphSubstitution } from '~/utils/glyphSubstitution'
+import { browserUrl } from '~/utils/linkBrowser'
+import { useLinkBrowser } from '~/composables/useLinkBrowser'
 import { focusIsHeldForTerminal, markAsTerminalInput } from '~/utils/focusHandoff'
 import { parseOsc52 } from '~/utils/osc52'
 import { copyText, readText } from '~/utils/clipboard'
@@ -28,6 +30,7 @@ const emit = defineEmits<{
 const terminalRef = ref<HTMLDivElement | null>(null)
 const socket = useTerminalSocket()
 const glyphs = createGlyphSubstitution()
+const { linkBrowser } = useLinkBrowser()
 const sessionTree = useSessionTree()
 const api = useSessionApi()
 const { isMobile } = useViewportMode(1024)
@@ -353,7 +356,17 @@ onMounted(() => {
 
   fitAddon = new FitAddon()
   terminal.loadAddon(fitAddon)
-  terminal.loadAddon(new WebLinksAddon())
+  // Links open in the browser chosen in the sidebar when it's set (see
+  // utils/linkBrowser); otherwise in a new tab, as WebLinksAddon does.
+  terminal.loadAddon(new WebLinksAddon((_event, uri) => {
+    const target = browserUrl(uri, linkBrowser.value)
+    if (target) {
+      window.location.href = target
+      return
+    }
+    const win = window.open(uri, '_blank', 'noopener,noreferrer')
+    if (win) win.opener = null
+  }))
 
   // OSC 52 clipboard writes from apps. Queries (`?`) are ignored, never
   // answered, so nothing in the session can read the user's clipboard.
