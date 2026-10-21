@@ -42,6 +42,36 @@ describe('useVisibleViewport', () => {
     expect(appHeight()).toBe('')
   })
 
+  it('catches the viewport growing back even when no resize is reported', () => {
+    vi.useFakeTimers()
+    const wrapper = mountWithViewport()
+    vv.height = 520 // keyboard up
+    vv.dispatchEvent(new Event('resize'))
+    expect(appHeight()).toBe('520px')
+
+    vv.height = 1000 // keyboard collapsed to the shortcut bar, no event
+    vi.advanceTimersByTime(1000)
+    expect(appHeight()).toBe('1000px')
+
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
+  it('re-reads the height once focus leaves the terminal', () => {
+    vi.useFakeTimers()
+    const wrapper = mountWithViewport()
+    vv.height = 520
+    vv.dispatchEvent(new Event('resize'))
+
+    document.dispatchEvent(new Event('focusout'))
+    vv.height = 1000 // keyboard finishes closing a moment later
+    vi.advanceTimersByTime(400)
+    expect(appHeight()).toBe('1000px')
+
+    wrapper.unmount()
+    vi.useRealTimers()
+  })
+
   it('undoes page scroll caused by the keyboard', () => {
     mountWithViewport()
     Object.defineProperty(window, 'scrollY', { value: 240, configurable: true })
