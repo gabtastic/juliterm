@@ -55,13 +55,14 @@ func TestIdentityAndManifestArePublic(t *testing.T) {
 	rec := httptest.NewRecorder()
 	mux.ServeHTTP(rec, httptest.NewRequest("GET", "/manifest.webmanifest", nil))
 	var m struct {
+		ID        string `json:"id"`
 		ShortName string `json:"short_name"`
 		Display   string `json:"display"`
 	}
 	if err := json.Unmarshal(rec.Body.Bytes(), &m); err != nil {
 		t.Fatal(err)
 	}
-	if m.ShortName != "macstudio84" || m.Display != "standalone" {
+	if m.ID != "/?juli=macstudio84" || m.ShortName != "macstudio84" || m.Display != "standalone" {
 		t.Errorf("manifest = %+v", m)
 	}
 }
