@@ -863,6 +863,9 @@ func (m *Manager) wireClientCallbacks(client *ControlClient, sessionID string) {
 		case EventWindowRenamed:
 			m.tree.RenameWindow(sessionID, event.WindowID, event.Name)
 			m.scheduleRediscover(sessionID, false)
+
+		case EventLayoutChanged:
+			m.scheduleRediscover(sessionID, true)
 		}
 	})
 }
@@ -883,6 +886,7 @@ func (m *Manager) startMetadataPoller(interval time.Duration) {
 			return
 		case <-ticker.C:
 			m.enrichMetadata()
+			m.reconcileTree()
 		}
 	}
 }
