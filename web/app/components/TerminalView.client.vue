@@ -316,6 +316,18 @@ function onTouchEnd() {
   })
 }
 
+// Links open in the browser chosen in the sidebar when it's set (see
+// utils/linkBrowser); otherwise in a new tab.
+function openLink(uri: string) {
+  const target = browserUrl(uri, linkBrowser.value)
+  if (target) {
+    window.location.href = target
+    return
+  }
+  const win = window.open(uri, '_blank', 'noopener,noreferrer')
+  if (win) win.opener = null
+}
+
 function stopRightClickPropagation(e: MouseEvent) {
   if (e.button === 2) e.stopPropagation()
 }
@@ -323,6 +335,13 @@ function stopRightClickPropagation(e: MouseEvent) {
 onMounted(() => {
   terminal = new Terminal({
     cursorBlink: true,
+    // OSC 8 hyperlinks (Claude Code's blue links): open directly through
+    // openLink. xterm's default asks with window.confirm, which a Home
+    // Screen web app may never show, so tapping them did nothing.
+    linkHandler: {
+      activate: (_event, uri) => openLink(uri),
+      allowNonHttpProtocols: false,
+    },
     fontSize: 14,
     fontFamily: "'SF Mono', 'Cascadia Code', 'Fira Code', 'Menlo', monospace",
     theme: {
@@ -356,17 +375,9 @@ onMounted(() => {
 
   fitAddon = new FitAddon()
   terminal.loadAddon(fitAddon)
-  // Links open in the browser chosen in the sidebar when it's set (see
-  // utils/linkBrowser); otherwise in a new tab, as WebLinksAddon does.
-  terminal.loadAddon(new WebLinksAddon((_event, uri) => {
-    const target = browserUrl(uri, linkBrowser.value)
-    if (target) {
-      window.location.href = target
-      return
-    }
-    const win = window.open(uri, '_blank', 'noopener,noreferrer')
-    if (win) win.opener = null
-  }))
+  // Plain URLs in the output (WebLinksAddon); OSC 8 links use the same
+  // opener through the terminal's linkHandler option.
+  terminal.loadAddon(new WebLinksAddon((_event, uri) => openLink(uri)))
 
   // OSC 52 clipboard writes from apps. Queries (`?`) are ignored, never
   // answered, so nothing in the session can read the user's clipboard.
