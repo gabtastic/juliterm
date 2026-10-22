@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPO="gabtastic/juliterm"
+REPO="cihann/juliterm"
 BINARY="juli"
 INSTALL_DIR="${JULI_INSTALL_DIR:-/usr/local/bin}"
 
