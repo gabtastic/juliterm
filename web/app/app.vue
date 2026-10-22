@@ -1,3 +1,9 @@
+<script setup lang="ts">
+// Name the tab and Home Screen shortcut after this machine on every page,
+// the login page included.
+useIdentity()
+</script>
+
 <template>
   <NuxtPage />
 </template>

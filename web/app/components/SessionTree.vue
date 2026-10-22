@@ -4,6 +4,7 @@ import type { Session } from '~/composables/useSessionTree'
 import { useTimeAgo } from '~/composables/useTimeAgo'
 import { useSessionApi } from '~/composables/useSessionApi'
 import { useLinkBrowser } from '~/composables/useLinkBrowser'
+import { useIdentity } from '~/composables/useIdentity'
 import { LINK_BROWSERS, isStandaloneApp, type LinkBrowser } from '~/utils/linkBrowser'
 
 const props = defineProps<{
@@ -19,6 +20,7 @@ const emit = defineEmits<{
 
 const { tick, formatTimeAgo } = useTimeAgo()
 const api = useSessionApi()
+const { name: machineName } = useIdentity()
 
 // Only an installed (Home Screen) web app opens links in an in-app browser,
 // so that's the only place the choice is offered.
@@ -231,7 +233,10 @@ function handleCancel() {
 <template>
   <aside class="session-tree">
     <div class="tree-header">
-      <span class="brand">Juli</span>
+      <span class="brand">
+        Juli
+        <span v-if="machineName" class="machine-name">{{ machineName }}</span>
+      </span>
       <div class="tree-header-actions">
         <button class="btn-add" title="New session" @click="startCreateSession">+</button>
         <button class="btn-logout" title="Logout" @click="logout">&#x23FB;</button>
@@ -412,6 +417,14 @@ function handleCancel() {
   font-size: 14px;
   color: #58a6ff;
   letter-spacing: -0.02em;
+}
+
+.machine-name {
+  display: block;
+  font-weight: 400;
+  font-size: 11px;
+  color: #8b949e;
+  letter-spacing: 0;
 }
 
 .tree-header-actions {

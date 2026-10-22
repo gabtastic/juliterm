@@ -863,6 +863,9 @@ func (m *Manager) wireClientCallbacks(client *ControlClient, sessionID string) {
 		case EventWindowRenamed:
 			m.tree.RenameWindow(sessionID, event.WindowID, event.Name)
 			m.scheduleRediscover(sessionID, false)
+
+		case EventLayoutChanged:
+			m.scheduleRediscover(sessionID, true)
 		}
 	})
 }
@@ -877,12 +880,18 @@ func (m *Manager) startMetadataPoller(interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
+	// Enrich right away, so a page loaded just after startup doesn't show
+	// sessions without their tool and git info for the first interval.
+	m.enrichMetadata()
+	m.reconcileTree()
+
 	for {
 		select {
 		case <-m.ctx.Done():
 			return
 		case <-ticker.C:
 			m.enrichMetadata()
+			m.reconcileTree()
 		}
 	}
 }
@@ -1115,7 +1124,7 @@ func (m *Manager) scheduleRediscover(sessionID string, start bool) {
 				log.Printf("tmux manager: rediscover session %s: %v", sessionID, err)
 			case tracked:
 				// Skip sessions removed meanwhile, so they don't reappear.
-				m.tree.UpdateSession(s)
+				m.tree.UpdateSessionStructure(s)
 			}
 			if !again {
 				return
