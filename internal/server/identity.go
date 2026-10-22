@@ -188,9 +188,12 @@ func (s *Server) handleManifest(w http.ResponseWriter, r *http.Request) {
 	name := s.displayName()
 	w.Header().Set("Content-Type", "application/manifest+json")
 	_ = json.NewEncoder(w).Encode(map[string]any{
-		"name":             name + " · Juli",
-		"short_name":       name,
-		"id":               "/",
+		"name":       name + " · Juli",
+		"short_name": name,
+		// A per-machine id: with the same id everywhere, iPadOS treated the
+		// Home Screen apps of different machines as one app, so adding the
+		// second shortcut repointed the first at the second machine.
+		"id":               "/?juli=" + name,
 		"start_url":        "/",
 		"display":          "standalone",
 		"background_color": "#0d1117",
