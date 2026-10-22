@@ -19,12 +19,42 @@ function apply(n: string) {
   meta.content = n
 }
 
+// Point the Home Screen icon at an inline copy of this machine's icon.
+// iPadOS downloads a linked icon on its own, without the page's cookies, so
+// behind an auth proxy (Cloudflare Access) it got the login page instead
+// and fell back to a letter. The page's own fetch carries the cookies, and
+// an inline data: URL needs no download at all.
+async function inlineTouchIcon() {
+  try {
+    const res = await fetch('/apple-touch-icon.png')
+    if (!res.ok || !res.headers.get('content-type')?.startsWith('image/')) return
+    const blob = await res.blob()
+    const dataUrl = await new Promise<string>((resolve, reject) => {
+      const reader = new FileReader()
+      reader.onload = () => resolve(reader.result as string)
+      reader.onerror = () => reject(reader.error)
+      reader.readAsDataURL(blob)
+    })
+    let link = document.querySelector<HTMLLinkElement>('link[rel="apple-touch-icon"]')
+    if (!link) {
+      link = document.createElement('link')
+      link.rel = 'apple-touch-icon'
+      document.head.appendChild(link)
+    }
+    link.href = dataUrl
+  }
+  catch {
+    // Keep the plain link; it still works without an auth proxy.
+  }
+}
+
 export function useIdentity() {
   if (!loading && typeof window !== 'undefined') {
     loading = fetch('/api/identity')
       .then(r => (r.ok ? r.json() : null))
       .then((id: { name?: string } | null) => { if (id?.name) apply(id.name) })
       .catch(() => {})
+      .then(inlineTouchIcon)
   }
   return { name }
 }
