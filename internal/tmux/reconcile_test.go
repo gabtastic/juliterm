@@ -55,3 +55,27 @@ func TestStaleSessionsIgnoresSessionsTmuxNoLongerHas(t *testing.T) {
 		t.Fatalf("stale = %v, want none (syncSessions removes vanished sessions)", got)
 	}
 }
+
+func TestUpdateSessionStructureKeepsMetadata(t *testing.T) {
+	tree := NewSessionTree()
+	tree.UpdateSession(&Session{
+		ID: "$1", Name: "zenith", ToolType: "claude", GitRepo: "arpiq/beaconwright", GitBranch: "main",
+		WorkingDir: "/w", Status: "running", LastActivity: 42,
+		Windows: []*Window{{ID: "@1", Panes: []*Pane{{ID: "%1"}}}},
+	})
+
+	// A structural re-read knows windows and panes, not metadata.
+	tree.UpdateSessionStructure(&Session{
+		ID: "$1", Name: "zenith",
+		Windows: []*Window{{ID: "@1", Panes: []*Pane{{ID: "%1"}, {ID: "%2", Active: true}}}},
+	})
+
+	got := tree.GetSession("$1")
+	if got.ToolType != "claude" || got.GitRepo != "arpiq/beaconwright" || got.GitBranch != "main" ||
+		got.WorkingDir != "/w" || got.Status != "running" || got.LastActivity != 42 {
+		t.Errorf("metadata lost: %+v", got)
+	}
+	if n := len(got.Windows[0].Panes); n != 2 {
+		t.Errorf("panes = %d, want 2", n)
+	}
+}
